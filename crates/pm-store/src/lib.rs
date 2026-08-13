@@ -84,6 +84,9 @@ pub struct ContactRecord {
     /// This contact's iroh transport public key, shared at pairing — lets
     /// this device dial them directly for Local delivery (see M6).
     pub transport_key: Option<[u8; 32]>,
+    /// `updated_at` of the last signed mailbox-pointer update accepted
+    /// from this contact — see `set_contact_pointer_update`.
+    pub pointer_updated_at: u64,
 }
 
 pub struct NewMessage<'a> {
@@ -346,6 +349,27 @@ impl Store {
         Ok(())
     }
 
+    /// Applies a signed mailbox-pointer update (`docs/PRD.md` §8) already
+    /// verified by the caller: updates `server_addr` and stamps
+    /// `pointer_updated_at` together, so a later update can be compared
+    /// against exactly the value that was actually applied. Callers are
+    /// expected to have already checked `updated_at` against the
+    /// contact's current `pointer_updated_at` themselves (this method
+    /// doesn't re-check — it's the mechanical "apply" step, not the
+    /// policy).
+    pub fn set_contact_pointer_update(
+        &self,
+        contact_id: i64,
+        server_addr: Option<&[u8]>,
+        updated_at: u64,
+    ) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE contacts SET server_addr = ?1, pointer_updated_at = ?2 WHERE id = ?3",
+            params![server_addr, updated_at as i64, contact_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_contact_server_addr(&self, contact_id: i64) -> Result<Option<Vec<u8>>> {
         self.conn
             .lock()
@@ -415,7 +439,7 @@ impl Store {
     pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk, transport_key
+            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk, transport_key, pointer_updated_at
              FROM contacts ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -428,6 +452,7 @@ impl Store {
             let next_write_n: i64 = row.get(6)?;
             let pending_otk: Option<Vec<u8>> = row.get(7)?;
             let transport_key: Option<Vec<u8>> = row.get(8)?;
+            let pointer_updated_at: i64 = row.get(9)?;
             Ok((
                 id,
                 identity_key,
@@ -438,6 +463,7 @@ impl Store {
                 next_write_n,
                 pending_otk,
                 transport_key,
+                pointer_updated_at,
             ))
         })?;
 
@@ -453,6 +479,7 @@ impl Store {
                 next_write_n,
                 pending_otk,
                 transport_key,
+                pointer_updated_at,
             ) = row?;
             out.push(ContactRecord {
                 id,
@@ -468,6 +495,7 @@ impl Store {
                 next_write_n: next_write_n as u64,
                 pending_otk: pending_otk.and_then(|v| v.try_into().ok()),
                 transport_key: transport_key.and_then(|v| v.try_into().ok()),
+                pointer_updated_at: pointer_updated_at as u64,
             });
         }
         Ok(out)
@@ -681,6 +709,30 @@ mod tests {
             None,
             "clearing back to None must work, not just leave the old value"
         );
+    }
+
+    #[test]
+    fn contact_pointer_updated_at_starts_zero_then_roundtrips_with_server_addr() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
+        assert_eq!(store.list_contacts().unwrap()[0].pointer_updated_at, 0);
+
+        store
+            .set_contact_pointer_update(contact_id, Some(b"new-server-addr"), 1_754_000_000_000)
+            .unwrap();
+
+        let contact = store.get_contact(contact_id).unwrap().unwrap();
+        assert_eq!(contact.server_addr, Some(b"new-server-addr".to_vec()));
+        assert_eq!(contact.pointer_updated_at, 1_754_000_000_000);
+
+        // A later update can clear server_addr back to Local-only while
+        // still advancing pointer_updated_at.
+        store
+            .set_contact_pointer_update(contact_id, None, 1_754_000_001_000)
+            .unwrap();
+        let contact = store.get_contact(contact_id).unwrap().unwrap();
+        assert_eq!(contact.server_addr, None);
+        assert_eq!(contact.pointer_updated_at, 1_754_000_001_000);
     }
 
     #[test]

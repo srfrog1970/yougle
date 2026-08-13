@@ -163,6 +163,7 @@ impl Client {
             bincode::serialize(&addr).map_err(|e| CoreError::CorruptBackup(e.to_string()))?;
         self.shared.store.set_own_server_addr(Some(&bytes))?;
         *self.shared.server_addr.lock().unwrap() = Some(addr);
+        self.spawn_pointer_update_broadcast();
         Ok(())
     }
 
@@ -171,7 +172,20 @@ impl Client {
     pub fn clear_own_server_addr(&self) -> Result<()> {
         self.shared.store.set_own_server_addr(None)?;
         *self.shared.server_addr.lock().unwrap() = None;
+        self.spawn_pointer_update_broadcast();
         Ok(())
+    }
+
+    /// Signs one mailbox-pointer update reflecting this device's *current*
+    /// own server_addr and sends it to every known contact — best-effort,
+    /// same fire-and-forget pattern `handle_decrypted` already uses for
+    /// receipts: a contact being unreachable right now shouldn't block or
+    /// fail the settings change that triggered this.
+    fn spawn_pointer_update_broadcast(&self) {
+        let shared = Arc::clone(&self.shared);
+        tokio::spawn(async move {
+            ClientShared::broadcast_pointer_update(&shared).await;
+        });
     }
 
     pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
@@ -677,6 +691,35 @@ impl ClientShared {
         let _ = self.deliver(contact_id, &payload).await;
     }
 
+    /// Signs one mailbox-pointer update reflecting this device's current
+    /// own `server_addr` and delivers it to every known contact,
+    /// best-effort (see `Client::spawn_pointer_update_broadcast`).
+    /// Associated function, not a `&self` method, purely for symmetry with
+    /// this file's other spawned-task entry points (`sync`,
+    /// `attribute_and_store`) — it doesn't actually need an owned `Arc`
+    /// itself, but every caller already has one handy.
+    async fn broadcast_pointer_update(shared: &Arc<Self>) {
+        let server_addr_bytes =
+            shared.server_addr.lock().unwrap().clone().map(|addr| {
+                bincode::serialize(&addr).expect("EndpointAddr serialization cannot fail")
+            });
+        let updated_at = now_millis();
+        let signature =
+            sign_pointer_update(&shared.identity.signing_key, &server_addr_bytes, updated_at);
+        let payload = PlaintextPayload::MailboxPointerUpdate {
+            server_addr: server_addr_bytes,
+            updated_at,
+            signature,
+        };
+
+        let Ok(contacts) = shared.store.list_contacts() else {
+            return;
+        };
+        for contact in contacts {
+            let _ = shared.deliver(contact.id, &payload).await;
+        }
+    }
+
     /// Associated function rather than a `&self` method (see the module
     /// doc comment): needs an owned `Arc<Self>` on hand so `Chat` receipt
     /// sending (via `handle_decrypted`) can spawn it as a background task.
@@ -850,6 +893,32 @@ impl ClientShared {
                     .set_message_status(contact_id, &msg_id, MessageStatus::Delivered)?;
                 Ok(Attribution::Receipt)
             }
+            Some(PlaintextPayload::MailboxPointerUpdate {
+                server_addr,
+                updated_at,
+                signature,
+            }) => {
+                let contact = shared.get_contact(contact_id)?;
+                let valid = pointer_update_is_valid(
+                    &contact.identity_key,
+                    contact.pointer_updated_at,
+                    &server_addr,
+                    updated_at,
+                    &signature,
+                );
+                if valid {
+                    shared.store.set_contact_pointer_update(
+                        contact_id,
+                        server_addr.as_deref(),
+                        updated_at,
+                    )?;
+                }
+                // A bad signature or a stale/replayed update is silently
+                // ignored, same convention as a malformed payload below —
+                // never surfaced as an error to whatever's calling this
+                // (an incoming connection waiting on its ack, or `sync`).
+                Ok(Attribution::PointerUpdate)
+            }
             None => Ok(Attribution::Unattributed), // malformed — skip, don't fail the caller
         }
     }
@@ -890,10 +959,12 @@ impl ClientShared {
 
 /// What decrypting and handling an envelope turned out to be — used so
 /// `sync` can tell a real chat message (worth counting/returning) apart
-/// from a receipt or an unattributable envelope (neither is).
+/// from a receipt, a mailbox-pointer update, or an unattributable
+/// envelope (none of those are).
 enum Attribution {
     Chat,
     Receipt,
+    PointerUpdate,
     Unattributed,
 }
 
@@ -919,7 +990,9 @@ impl ProtocolHandler for DirectHandler {
             Some(shared) => match Envelope::from_padded_bytes(&envelope_bytes) {
                 Err(e) => DirectAck::Error(format!("malformed envelope: {e}")),
                 Ok(envelope) => match ClientShared::attribute_and_store(&shared, &envelope) {
-                    Ok(Attribution::Chat | Attribution::Receipt) => DirectAck::Ok,
+                    Ok(Attribution::Chat | Attribution::Receipt | Attribution::PointerUpdate) => {
+                        DirectAck::Ok
+                    }
                     Ok(Attribution::Unattributed) => DirectAck::Error(
                         "could not attribute this message to any known contact".to_string(),
                     ),
@@ -963,6 +1036,75 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Canonical bytes a mailbox-pointer update's signature covers — shared by
+/// both signing and verification so they can never drift apart.
+fn pointer_update_signed_bytes(server_addr: &Option<Vec<u8>>, updated_at: u64) -> Vec<u8> {
+    bincode::serialize(&(server_addr, updated_at))
+        .expect("(Option<Vec<u8>>, u64) serialization cannot fail")
+}
+
+/// Signs a mailbox-pointer update with this device's own long-term
+/// identity key — independent of whatever Olm session ends up carrying
+/// it, since a change this consequential (it decides where a contact's
+/// messages get redirected) deserves the stronger of the two available
+/// keys, not just "whoever currently holds this session".
+fn sign_pointer_update(
+    signing_key: &ed25519_dalek::SigningKey,
+    server_addr: &Option<Vec<u8>>,
+    updated_at: u64,
+) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    signing_key
+        .sign(&pointer_update_signed_bytes(server_addr, updated_at))
+        .to_bytes()
+        .to_vec()
+}
+
+/// Verifies a mailbox-pointer update's signature against a contact's
+/// known identity key (on file since pairing). `verify_strict` (not plain
+/// `verify`) deliberately — the stricter, non-malleable check, since this
+/// gates a security-relevant action rather than routine message
+/// authentication. Returns `false` (not an error) for any kind of
+/// malformed input — a bad signature length is treated exactly like a bad
+/// signature, not a special case.
+fn verify_pointer_update(
+    identity_key: &[u8; 32],
+    server_addr: &Option<Vec<u8>>,
+    updated_at: u64,
+    signature: &[u8],
+) -> bool {
+    let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(identity_key) else {
+        return false;
+    };
+    let Ok(signature_bytes) = <[u8; 64]>::try_from(signature) else {
+        return false;
+    };
+    let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
+    verifying_key
+        .verify_strict(
+            &pointer_update_signed_bytes(server_addr, updated_at),
+            &signature,
+        )
+        .is_ok()
+}
+
+/// Whether a received mailbox-pointer update should actually be applied:
+/// a genuine signature from this contact's known identity key, *and*
+/// strictly newer than the last update accepted from them — rejecting a
+/// stale or replayed one (e.g. from re-syncing a Server mailbox's
+/// retained history after a restore) without needing to special-case it
+/// anywhere else.
+fn pointer_update_is_valid(
+    identity_key: &[u8; 32],
+    current_pointer_updated_at: u64,
+    server_addr: &Option<Vec<u8>>,
+    updated_at: u64,
+    signature: &[u8],
+) -> bool {
+    verify_pointer_update(identity_key, server_addr, updated_at, signature)
+        && updated_at > current_pointer_updated_at
+}
+
 fn expect_ok(response: NodeResponse) -> Result<()> {
     match response {
         NodeResponse::Ok => Ok(()),
@@ -974,5 +1116,124 @@ fn unexpected_response(response: NodeResponse) -> CoreError {
     match response {
         NodeResponse::Error(e) => CoreError::NodeError(e),
         other => CoreError::NodeError(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_valid_signature_verifies() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let identity_key = signing_key.verifying_key().to_bytes();
+        let server_addr = Some(b"fake-endpoint-addr".to_vec());
+        let signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000);
+
+        assert!(verify_pointer_update(
+            &identity_key,
+            &server_addr,
+            1_754_000_000_000,
+            &signature
+        ));
+    }
+
+    #[test]
+    fn a_signature_from_the_wrong_key_is_rejected() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let wrong_identity_key = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let server_addr = Some(b"fake-endpoint-addr".to_vec());
+        let signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000);
+
+        assert!(!verify_pointer_update(
+            &wrong_identity_key,
+            &server_addr,
+            1_754_000_000_000,
+            &signature
+        ));
+    }
+
+    #[test]
+    fn a_signature_over_different_content_is_rejected() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let identity_key = signing_key.verifying_key().to_bytes();
+        let signature = sign_pointer_update(
+            &signing_key,
+            &Some(b"original-addr".to_vec()),
+            1_754_000_000_000,
+        );
+
+        // Same signature, but claiming a different server_addr than what
+        // was actually signed.
+        assert!(!verify_pointer_update(
+            &identity_key,
+            &Some(b"tampered-addr".to_vec()),
+            1_754_000_000_000,
+            &signature
+        ));
+        // Same signature, but claiming a different updated_at.
+        assert!(!verify_pointer_update(
+            &identity_key,
+            &Some(b"original-addr".to_vec()),
+            1_754_000_000_001,
+            &signature
+        ));
+    }
+
+    #[test]
+    fn a_malformed_signature_is_rejected_not_panicking() {
+        let identity_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32])
+            .verifying_key()
+            .to_bytes();
+        assert!(!verify_pointer_update(
+            &identity_key,
+            &Some(b"addr".to_vec()),
+            1,
+            &[0u8; 3], // wrong length
+        ));
+        assert!(!verify_pointer_update(
+            &identity_key,
+            &Some(b"addr".to_vec()),
+            1,
+            &[],
+        ));
+    }
+
+    #[test]
+    fn a_stale_or_replayed_update_is_rejected_even_with_a_valid_signature() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let identity_key = signing_key.verifying_key().to_bytes();
+        let server_addr = Some(b"fake-endpoint-addr".to_vec());
+        let signature = sign_pointer_update(&signing_key, &server_addr, 1_000);
+
+        // Older than (or equal to) what's already been accepted from this
+        // contact — rejected regardless of the signature being genuine,
+        // e.g. a re-synced Server mailbox replaying its retained history
+        // after a restore.
+        assert!(!pointer_update_is_valid(
+            &identity_key,
+            1_000,
+            &server_addr,
+            1_000,
+            &signature,
+        ));
+        assert!(!pointer_update_is_valid(
+            &identity_key,
+            2_000,
+            &server_addr,
+            1_000,
+            &signature,
+        ));
+
+        // Genuinely newer — accepted.
+        assert!(pointer_update_is_valid(
+            &identity_key,
+            999,
+            &server_addr,
+            1_000,
+            &signature,
+        ));
     }
 }
