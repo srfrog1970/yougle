@@ -16,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use error::Result;
 pub use error::StoreError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Outgoing,
     Incoming,
@@ -38,6 +38,21 @@ impl Direction {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactRecord {
+    pub id: i64,
+    pub identity_key: [u8; 32],
+    pub curve25519_key: [u8; 32],
+    pub display_name: Option<String>,
+    pub server_addr: Option<Vec<u8>>,
+    pub pair_secret: Option<[u8; 32]>,
+    pub next_write_n: u64,
+    /// The one-time key received from this contact at pairing time, not yet
+    /// consumed by a first outbound message. See migration 0004 for why
+    /// this exists rather than an eagerly-established session.
+    pub pending_otk: Option<[u8; 32]>,
+}
+
 pub struct NewMessage<'a> {
     pub msg_id: [u8; 16],
     pub direction: Direction,
@@ -46,7 +61,7 @@ pub struct NewMessage<'a> {
     pub plaintext: &'a [u8],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredMessage {
     pub msg_id: [u8; 16],
     pub direction: Direction,
@@ -202,6 +217,181 @@ impl Store {
     pub fn observe_lamport(&self, remote: u64) -> Result<u64> {
         lamport::observe(&self.conn, remote)
     }
+
+    /// Saves (or replaces) this device's own vodozemac Account pickle.
+    pub fn save_account_pickle(&self, pickle: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO account (id, pickle, updated_at) VALUES (0, ?1, unixepoch())
+             ON CONFLICT (id) DO UPDATE SET
+                pickle = excluded.pickle,
+                updated_at = excluded.updated_at",
+            params![pickle],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_account_pickle(&self) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .query_row("SELECT pickle FROM account WHERE id = 0", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Records where a contact can currently be reached — an opaque,
+    /// serialized address `pm-core` supplies and interprets (e.g., an iroh
+    /// `EndpointAddr`), or `None` to clear it back to unknown/Local-only.
+    pub fn set_contact_server_addr(
+        &self,
+        contact_id: i64,
+        server_addr: Option<&[u8]>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE contacts SET server_addr = ?1 WHERE id = ?2",
+            params![server_addr, contact_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_contact_server_addr(&self, contact_id: i64) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .query_row(
+                "SELECT server_addr FROM contacts WHERE id = ?1",
+                [contact_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|opt| opt.flatten())
+            .map_err(Into::into)
+    }
+
+    /// Records the shared pairing secret for a contact (stand-in for real
+    /// pairing output — see `pm-core`).
+    pub fn set_contact_pair_secret(&self, contact_id: i64, pair_secret: &[u8; 32]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE contacts SET pair_secret = ?1 WHERE id = ?2",
+            params![pair_secret.as_slice(), contact_id],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically advances and returns this device's write counter for a
+    /// contact — the `n` used to derive the next write-auth value.
+    pub fn increment_and_get_next_write_n(&self, contact_id: i64) -> Result<u64> {
+        self.conn.execute(
+            "UPDATE contacts SET next_write_n = next_write_n + 1 WHERE id = ?1",
+            [contact_id],
+        )?;
+        self.conn
+            .query_row(
+                "SELECT next_write_n FROM contacts WHERE id = ?1",
+                [contact_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| (n - 1) as u64) // return the value *used* for this write, not the post-increment one
+            .map_err(Into::into)
+    }
+
+    /// Records the one-time key received from this contact at pairing time,
+    /// held until it's consumed to lazily establish the first outbound
+    /// session (see migration 0004).
+    pub fn set_contact_pending_otk(&self, contact_id: i64, otk: Option<&[u8; 32]>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE contacts SET pending_otk = ?1 WHERE id = ?2",
+            params![otk.map(|k| k.as_slice()), contact_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk
+             FROM contacts ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let identity_key: Vec<u8> = row.get(1)?;
+            let curve25519_key: Vec<u8> = row.get(2)?;
+            let display_name: Option<String> = row.get(3)?;
+            let server_addr: Option<Vec<u8>> = row.get(4)?;
+            let pair_secret: Option<Vec<u8>> = row.get(5)?;
+            let next_write_n: i64 = row.get(6)?;
+            let pending_otk: Option<Vec<u8>> = row.get(7)?;
+            Ok((
+                id,
+                identity_key,
+                curve25519_key,
+                display_name,
+                server_addr,
+                pair_secret,
+                next_write_n,
+                pending_otk,
+            ))
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                id,
+                identity_key,
+                curve25519_key,
+                display_name,
+                server_addr,
+                pair_secret,
+                next_write_n,
+                pending_otk,
+            ) = row?;
+            out.push(ContactRecord {
+                id,
+                identity_key: identity_key
+                    .try_into()
+                    .map_err(|_| StoreError::InvalidMsgIdLength(0))?,
+                curve25519_key: curve25519_key
+                    .try_into()
+                    .map_err(|_| StoreError::InvalidMsgIdLength(0))?,
+                display_name,
+                server_addr,
+                pair_secret: pair_secret.and_then(|v| v.try_into().ok()),
+                next_write_n: next_write_n as u64,
+                pending_otk: pending_otk.and_then(|v| v.try_into().ok()),
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn get_contact(&self, contact_id: i64) -> Result<Option<ContactRecord>> {
+        Ok(self
+            .list_contacts()?
+            .into_iter()
+            .find(|c| c.id == contact_id))
+    }
+
+    /// High-water mark of node-assigned blob ids already processed by
+    /// `sync()`.
+    pub fn get_last_synced_blob_id(&self) -> Result<u64> {
+        self.conn
+            .query_row(
+                "SELECT last_synced_blob_id FROM account WHERE id = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|opt| opt.unwrap_or(0) as u64)
+            .map_err(Into::into)
+    }
+
+    pub fn set_last_synced_blob_id(&self, value: u64) -> Result<()> {
+        // The account row might not exist yet if no account pickle has been
+        // saved; ensure it does, then set the watermark.
+        self.conn.execute(
+            "INSERT INTO account (id, pickle, updated_at, last_synced_blob_id)
+             VALUES (0, x'', unixepoch(), ?1)
+             ON CONFLICT (id) DO UPDATE SET last_synced_blob_id = excluded.last_synced_blob_id",
+            [value as i64],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -304,6 +494,97 @@ mod tests {
         let messages = reopened.messages_for_contact(contact_id).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].plaintext, b"persisted");
+    }
+
+    #[test]
+    fn account_pickle_starts_empty_then_roundtrips_and_replaces() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        assert_eq!(store.load_account_pickle().unwrap(), None);
+
+        store.save_account_pickle(b"account-v1").unwrap();
+        assert_eq!(
+            store.load_account_pickle().unwrap(),
+            Some(b"account-v1".to_vec())
+        );
+
+        store.save_account_pickle(b"account-v2").unwrap();
+        assert_eq!(
+            store.load_account_pickle().unwrap(),
+            Some(b"account-v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn contact_server_addr_starts_unset_then_roundtrips_and_clears() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
+        assert_eq!(store.get_contact_server_addr(contact_id).unwrap(), None);
+
+        store
+            .set_contact_server_addr(contact_id, Some(b"fake-endpoint-addr-bytes"))
+            .unwrap();
+        assert_eq!(
+            store.get_contact_server_addr(contact_id).unwrap(),
+            Some(b"fake-endpoint-addr-bytes".to_vec())
+        );
+
+        store.set_contact_server_addr(contact_id, None).unwrap();
+        assert_eq!(
+            store.get_contact_server_addr(contact_id).unwrap(),
+            None,
+            "clearing back to None must work, not just leave the old value"
+        );
+    }
+
+    #[test]
+    fn pair_secret_and_write_counter_roundtrip() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
+
+        store
+            .set_contact_pair_secret(contact_id, &[5u8; 32])
+            .unwrap();
+        let contact = store.get_contact(contact_id).unwrap().unwrap();
+        assert_eq!(contact.pair_secret, Some([5u8; 32]));
+        assert_eq!(contact.next_write_n, 0);
+
+        assert_eq!(store.increment_and_get_next_write_n(contact_id).unwrap(), 0);
+        assert_eq!(store.increment_and_get_next_write_n(contact_id).unwrap(), 1);
+        assert_eq!(store.increment_and_get_next_write_n(contact_id).unwrap(), 2);
+    }
+
+    #[test]
+    fn list_contacts_returns_everything_in_id_order() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let a = store
+            .upsert_contact(&[1u8; 32], &[2u8; 32], Some("A"))
+            .unwrap();
+        let b = store
+            .upsert_contact(&[3u8; 32], &[4u8; 32], Some("B"))
+            .unwrap();
+
+        let contacts = store.list_contacts().unwrap();
+        assert_eq!(
+            contacts.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![a, b]
+        );
+    }
+
+    #[test]
+    fn last_synced_blob_id_defaults_to_zero_and_roundtrips() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        assert_eq!(store.get_last_synced_blob_id().unwrap(), 0);
+
+        store.set_last_synced_blob_id(42).unwrap();
+        assert_eq!(store.get_last_synced_blob_id().unwrap(), 42);
+
+        // Must not clobber a previously-saved account pickle.
+        store.save_account_pickle(b"account-bytes").unwrap();
+        store.set_last_synced_blob_id(43).unwrap();
+        assert_eq!(
+            store.load_account_pickle().unwrap(),
+            Some(b"account-bytes".to_vec())
+        );
     }
 
     #[test]

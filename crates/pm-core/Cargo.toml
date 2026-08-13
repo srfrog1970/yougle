@@ -1,0 +1,25 @@
+[package]
+name = "pm-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "State machine, sync engine, and public API surface tying pm-proto/pm-crypto/pm-store/pm-transport together into one client."
+
+[dependencies]
+pm-proto = { path = "../pm-proto" }
+pm-crypto = { path = "../pm-crypto" }
+pm-store = { path = "../pm-store" }
+pm-transport = { path = "../pm-transport" }
+thiserror = { workspace = true }
+sha2 = "0.10"
+serde = { workspace = true }
+bincode = "1"
+vodozemac = "0.10"
+iroh = "1"
+rand = "0.8"
+
+[dev-dependencies]
+pm-node = { path = "../pm-node" }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

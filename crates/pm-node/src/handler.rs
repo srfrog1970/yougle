@@ -65,6 +65,19 @@ impl MailboxHandler {
                 self.store.ack(&ids);
                 NodeResponse::Ok
             }
+            NodeRequest::PutBackup { mailbox_key, blob } => {
+                if mailbox_key != self.mailbox_key {
+                    return NodeResponse::Error("not the mailbox owner".to_string());
+                }
+                self.store.put_backup(blob);
+                NodeResponse::Ok
+            }
+            NodeRequest::GetBackup { mailbox_key } => {
+                if mailbox_key != self.mailbox_key {
+                    return NodeResponse::Error("not the mailbox owner".to_string());
+                }
+                NodeResponse::Backup(self.store.get_backup())
+            }
         }
     }
 }
@@ -177,6 +190,40 @@ mod tests {
         };
         assert!(blobs[0].delivered, "ack should mark delivered");
         assert_eq!(blobs.len(), 1, "ack should not delete, per docs/PRD.md");
+    }
+
+    #[test]
+    fn backup_requires_the_correct_mailbox_key_and_roundtrips() {
+        let (handler, mailbox_key) = handler();
+        let wrong_key = [2u8; 32];
+
+        assert!(matches!(
+            handler.handle(NodeRequest::GetBackup {
+                mailbox_key: wrong_key
+            }),
+            NodeResponse::Error(_)
+        ));
+
+        // No backup stored yet.
+        assert!(matches!(
+            handler.handle(NodeRequest::GetBackup { mailbox_key }),
+            NodeResponse::Backup(None)
+        ));
+
+        assert!(matches!(
+            handler.handle(NodeRequest::PutBackup {
+                mailbox_key,
+                blob: b"encrypted bundle".to_vec()
+            }),
+            NodeResponse::Ok
+        ));
+
+        let NodeResponse::Backup(Some(blob)) =
+            handler.handle(NodeRequest::GetBackup { mailbox_key })
+        else {
+            panic!("expected Backup(Some(_))");
+        };
+        assert_eq!(blob, b"encrypted bundle");
     }
 
     #[test]

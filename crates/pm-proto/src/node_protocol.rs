@@ -52,6 +52,22 @@ pub enum NodeRequest {
         mailbox_key: [u8; 32],
         ids: Vec<u64>,
     },
+    /// Stores (replacing any previous value) an opaque encrypted backup
+    /// blob for this mailbox's owner — per `ARCHIT_1.MD` §4.6 and
+    /// `docs/PRD.md` §3/§5, the contacts-and-history bundle a new device
+    /// restores from. Authenticated by mailbox ownership.
+    PutBackup {
+        mailbox_key: [u8; 32],
+        blob: Vec<u8>,
+    },
+    /// Retrieves the current backup blob, if any. Authenticated by mailbox
+    /// ownership — unlike the original architecture's DHT-published
+    /// pointer-then-fetch design, restoring on a new device in this build
+    /// means re-supplying the Server's address directly (see
+    /// `pm-core`'s docs for why: DHT publishing is an open item, not
+    /// resolved here), so the requester already needs to know the mailbox
+    /// key to ask at all.
+    GetBackup { mailbox_key: [u8; 32] },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,5 +81,7 @@ pub struct StoredBlob {
 pub enum NodeResponse {
     Ok,
     Blobs(Vec<StoredBlob>),
+    /// `None` if no backup has ever been stored for this mailbox.
+    Backup(Option<Vec<u8>>),
     Error(String),
 }

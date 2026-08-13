@@ -10,6 +10,7 @@ description = "SQLCipher-encrypted local storage: schema, migrations, and Lampor
 thiserror = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
 hex = "0.4"
+serde = { workspace = true }
 
 [dev-dependencies]
 pm-proto = { path = "../pm-proto" }

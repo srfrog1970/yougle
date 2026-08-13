@@ -1,11 +1,13 @@
 //! `pm-crypto`: recovery-phrase seed handling, deterministic identity key
 //! derivation, and a vodozemac (Olm) session wrapper.
 
+pub mod backup;
 pub mod error;
 pub mod identity;
 pub mod seed;
 pub mod session;
 
+pub use backup::{decrypt_backup, encrypt_backup};
 pub use error::{CryptoError, Result};
 pub use identity::Identity;
 pub use seed::Seed;

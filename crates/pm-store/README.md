@@ -2,9 +2,9 @@
 
 SQLCipher-encrypted local storage: schema, migrations, and Lamport-clock message ordering.
 
-Status: M1 complete.
+Status: M1 and M3 complete.
 
-- Schema (`src/migrations/0001_init.sql`): `contacts`, `sessions` (pickled Olm state per contact), `messages`, and a single-row `local_clock`.
+- Schema, across four migrations: `contacts`, `sessions` (pickled Olm state per contact), `messages`, `local_clock` (0001); this device's own `account` pickle (0002); per-contact `pair_secret` and `next_write_n` for deriving write-auth values, plus a `last_synced_blob_id` watermark (0003); a `pending_otk` per contact, holding the one-time key received at pairing until consumed by the first outbound send (0004).
 - `migrations` — a minimal linear runner tracked via `PRAGMA user_version`.
 - `lamport` — the standard Lamport clock (`tick`, `observe`), persisted so it survives restarts.
 - The crate itself is deliberately identity/crypto-agnostic — it stores whatever key bytes and plaintext it's given, and only depends on `pm-proto`/`pm-crypto` as dev-dependencies for the milestone integration test. Wiring storage to the crypto/session layer for real is `pm-core`'s job.

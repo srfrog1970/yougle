@@ -27,6 +27,9 @@ struct Inner {
     registered_slot_hashes: HashSet<[u8; 32]>,
     blobs: Vec<StoredBlob>,
     next_id: u64,
+    /// The single backup blob for this mailbox's owner. `PutBackup`
+    /// replaces it wholesale; there's only ever one current backup.
+    backup: Option<Vec<u8>>,
 }
 
 /// A single tenant's mailbox: one owner (identified out of band by whatever
@@ -50,7 +53,11 @@ impl MailboxStore {
             inner: Mutex::new(Inner {
                 registered_slot_hashes: HashSet::new(),
                 blobs: Vec::new(),
-                next_id: 0,
+                // Starts at 1, not 0: pm-core's sync() uses 0 as a "never
+                // synced anything yet" watermark sentinel, which would
+                // ambiguously collide with a real id of 0.
+                next_id: 1,
+                backup: None,
             }),
         }
     }
@@ -96,6 +103,16 @@ impl MailboxStore {
                 blob.delivered = true;
             }
         }
+    }
+
+    /// Replaces the current backup blob wholesale.
+    pub fn put_backup(&self, blob: Vec<u8>) {
+        self.inner.lock().unwrap().backup = Some(blob);
+    }
+
+    /// The current backup blob, if one has ever been stored.
+    pub fn get_backup(&self) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().backup.clone()
     }
 }
 
@@ -160,5 +177,21 @@ mod tests {
     fn acking_an_unknown_id_is_a_harmless_no_op() {
         let store = MailboxStore::new();
         store.ack(&[999]); // must not panic
+    }
+
+    #[test]
+    fn backup_starts_empty_then_roundtrips_and_replaces() {
+        let store = MailboxStore::new();
+        assert_eq!(store.get_backup(), None);
+
+        store.put_backup(b"first backup".to_vec());
+        assert_eq!(store.get_backup(), Some(b"first backup".to_vec()));
+
+        store.put_backup(b"second backup".to_vec());
+        assert_eq!(
+            store.get_backup(),
+            Some(b"second backup".to_vec()),
+            "put_backup replaces wholesale, doesn't append"
+        );
     }
 }

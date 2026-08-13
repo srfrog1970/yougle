@@ -6,7 +6,12 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_init.sql"),
+    include_str!("migrations/0002_account.sql"),
+    include_str!("migrations/0003_pairing.sql"),
+    include_str!("migrations/0004_pending_otk.sql"),
+];
 
 pub fn run(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -50,7 +55,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             names,
-            vec!["contacts", "local_clock", "messages", "sessions"]
+            vec!["account", "contacts", "local_clock", "messages", "sessions"]
         );
     }
 }
