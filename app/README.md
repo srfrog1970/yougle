@@ -26,6 +26,12 @@ If this bug resurfaces on a future WSL2 kernel update, the diagnostic path was: 
 
 What *is* verified end to end: `pm-ffi` compiles and passes its tests on the host target, and the full Android pipeline — `uniffi-bindgen-react-native` config, NDK/SDK toolchain, `cargo-ndk`, cross-compilation for all four ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`), `.a` copy into `jniLibs`, and Kotlin/TS binding generation — completes cleanly in both dev and release profiles.
 
+## Known upstream issue: `uniffi-bindgen-react-native`'s generated CMakeLists.txt
+
+`uniffi-bindgen-react-native@0.31.0-3` (the latest published version) generates an Android `CMakeLists.txt` that resolves its own C++ headers via `node -p "require.resolve('uniffi-bindgen-react-native/package.json')"` at CMake-configure time. That package's own `exports` field doesn't declare `./package.json` as an allowed subpath, so under Node's strict ESM `exports` resolution (confirmed with Node 24) that `require.resolve` call throws `ERR_PACKAGE_PATH_NOT_EXPORTED`, `execute_process` fails, and the resulting CMake variable is silently empty — the actual compile then fails with `fatal error: 'UniffiCallInvoker.h' file not found` (and a giveaway literal `-I/cpp/includes` in the compiler invocation, since the CMake path template collapsed to nothing). This isn't fixable by hand-editing `android/CMakeLists.txt` since `ubrn build android --and-generate` regenerates it every time.
+
+Fixed via `patch-package` (`patches/uniffi-bindgen-react-native+0.31.0-3.patch`), which adds `"./package.json": "./package.json"` to that package's `exports` map so the resolve call succeeds. Applied automatically via `npm install`'s `postinstall` hook — no manual step needed. Worth re-checking if `uniffi-bindgen-react-native` ships a version past `0.31.0-3` (the patch can likely be dropped then).
+
 ## Setup
 
 ```

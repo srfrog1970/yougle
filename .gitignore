@@ -6,10 +6,13 @@ Cargo.lock
 # Node / React Native
 node_modules/
 .expo/
-ios/Pods/
-ios/build/
-android/.gradle/
-android/app/build/
+**/ios/Pods/
+**/ios/build/
+**/android/.gradle/
+**/android/build/
+**/android/app/build/
+**/android/**/.cxx/
+**/android/local.properties
 # ubrn cross-compiled static libs (100MB+ each per ABI) — rebuild via `npx ubrn build android`
 **/jniLibs/
 *.log

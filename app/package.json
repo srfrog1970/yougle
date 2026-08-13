@@ -4,6 +4,7 @@
   "description": "Rust core (pm-core) bridged to React Native via uniffi-bindgen-react-native",
   "main": "src/index",
   "scripts": {
+    "postinstall": "patch-package",
     "ubrn:checkout": "ubrn checkout",
     "ubrn:ios": "ubrn build ios --and-generate && (cd example/ios && pod install)",
     "ubrn:android": "ubrn build android --and-generate",
@@ -29,6 +30,7 @@
   "devDependencies": {
     "@react-native/babel-preset": "0.85.0",
     "@types/react": "^19.2.0",
+    "patch-package": "^8.0.1",
     "react": "19.2.3",
     "react-native": "0.85.0"
   },

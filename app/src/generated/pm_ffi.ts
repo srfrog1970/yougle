@@ -19,6 +19,138 @@ const uniffiIsDebug =
 
 // Public interface members begin here.
 
+/**
+ * Generates a fresh 24-word BIP39 recovery phrase. No `Client` exists yet
+ * at onboarding time, so this is a free function rather than a method.
+ */
+export function generateSeedPhrase(): string {
+    return ((__rb: Uint8Array) => {
+        try {
+            return FfiConverterString.lift(__rb);
+        } finally {
+            nativeModule().rustbuffer_free(__rb);
+        }
+    })(uniffiCaller.rustCall(
+            /*caller:*/ (callStatus) => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_func_generate_seed_phrase(
+                callStatus);
+            },
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+    ));
+    }
+
+// Hermes (React Native ≥ 0.74) ships TextEncoder and encodeInto, but not
+// TextDecoder. For single-string decode (bytesToString), we polyfill via the
+// C++ string_from_buffer helper using a duck-typed object matching the
+// standard TextDecoder.decode signature. Once Hermes ships a real
+// TextDecoder, the `typeof` check will pick it up automatically.
+//
+// For array-of-strings decode (readStringFromBuffer), we keep a dedicated C++
+// helper: the polyfill path (new Uint8Array view + decode) measured ~40%
+// slower on getStringArray benchmarks than a direct (buf, offset, length)
+// call, due to the per-read view allocation and extra property lookups in
+// string_from_buffer.
+const stringConverter = (() => {
+    const encoder = new TextEncoder();
+    const decoder: { decode(input: UniffiByteArray): string } =
+        typeof TextDecoder !== "undefined"
+            ? new TextDecoder()
+            : {
+                  decode: (bytes: UniffiByteArray) =>
+                      nativeModule().ubrn_uniffi_internal_fn_func_ffi__string_from_buffer(
+                          bytes,
+                          undefined as any,
+                      ) as string,
+              };
+    return {
+        // Single-string lower() uses the C++ helper — TextEncoder.encode
+        // measured ~43% slower on takeString benchmarks.
+        stringToBytes: (s: string) =>
+            nativeModule().ubrn_uniffi_internal_fn_func_ffi__string_to_buffer(s, undefined as any),
+        bytesToString: (ab: UniffiByteArray) => decoder.decode(ab),
+        // Direct C++ call — bypasses uniffiCaller.rustCall() overhead.
+        // Matters for N-element arrays.
+        stringByteLength: (s: string) =>
+            nativeModule().ubrn_uniffi_internal_fn_func_ffi__string_to_byte_length(s, undefined as any) as number,
+        // Encode directly into the RustBuffer backing store via
+        // TextEncoder.encodeInto — zero intermediate allocation. Replaces
+        // the old C++ write_string_into_buffer helper.
+        writeStringIntoBuffer: (s: string, buf: any, offset: number): number => {
+            const view = new Uint8Array(
+                buf.arrayBuffer,
+                offset,
+                buf.arrayBuffer.byteLength - offset,
+            );
+            return encoder.encodeInto(s, view).written;
+        },
+        // Dedicated C++ helper — avoids per-read Uint8Array allocation and
+        // the double property-lookup in string_from_buffer.
+        readStringFromBuffer: (buf: any, offset: number, length: number): string =>
+            nativeModule().ubrn_uniffi_internal_fn_func_ffi__read_string_from_buffer(buf, offset, length) as string,
+    };
+})();
+const FfiConverterString = uniffiCreateFfiConverterString(stringConverter);
+
+export type FfiContact = {
+    id: bigint,
+    identityKey: ArrayBuffer,
+    curve25519Key: ArrayBuffer,
+    displayName?: string,
+    /**
+     * Whether this contact has a Server mailbox on file — until M6 (see
+     * `pm-core`'s module-level scope note), sending only works when this
+     * is true.
+     */
+    hasServer: boolean
+}
+
+/**
+ * Generated factory for {@link FfiContact} record objects.
+ */
+export const FfiContact = (() => {
+    const defaults = () => ({
+    });
+    const create = (() => {
+        return uniffiCreateRecord<FfiContact, ReturnType<typeof defaults>>(defaults);
+    })();
+    return Object.freeze({
+        create,
+        new: create,
+        defaults: () => Object.freeze(defaults()) as Partial<FfiContact>,
+    });
+})();
+
+const FfiConverterTypeFfiContact = (() => {
+    type TypeName = FfiContact;
+    class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+        read(from: RustBuffer): TypeName {
+            return {
+                id: FfiConverterInt64.read(from), 
+                identityKey: FfiConverterArrayBuffer.read(from), 
+                curve25519Key: FfiConverterArrayBuffer.read(from), 
+                displayName: FfiConverterOptionalString.read(from), 
+                hasServer: FfiConverterBool.read(from)
+            };
+        }
+        write(value: TypeName, into: RustBuffer): void {
+            FfiConverterInt64.write(value.id, into);
+            FfiConverterArrayBuffer.write(value.identityKey, into);
+            FfiConverterArrayBuffer.write(value.curve25519Key, into);
+            FfiConverterOptionalString.write(value.displayName, into);
+            FfiConverterBool.write(value.hasServer, into);
+        }
+        allocationSize(value: TypeName): number {
+            return FfiConverterInt64.allocationSize(value.id) +
+             FfiConverterArrayBuffer.allocationSize(value.identityKey) +
+             FfiConverterArrayBuffer.allocationSize(value.curve25519Key) +
+             FfiConverterOptionalString.allocationSize(value.displayName) +
+             FfiConverterBool.allocationSize(value.hasServer);
+            
+        }
+    };
+    return new FFIConverter();
+})();
+
 export type FfiMessage = {
     msgId: ArrayBuffer,
     outgoing: boolean,
@@ -74,57 +206,65 @@ const FfiConverterTypeFfiMessage = (() => {
     return new FFIConverter();
 })();
 
-// Hermes (React Native ≥ 0.74) ships TextEncoder and encodeInto, but not
-// TextDecoder. For single-string decode (bytesToString), we polyfill via the
-// C++ string_from_buffer helper using a duck-typed object matching the
-// standard TextDecoder.decode signature. Once Hermes ships a real
-// TextDecoder, the `typeof` check will pick it up automatically.
-//
-// For array-of-strings decode (readStringFromBuffer), we keep a dedicated C++
-// helper: the polyfill path (new Uint8Array view + decode) measured ~40%
-// slower on getStringArray benchmarks than a direct (buf, offset, length)
-// call, due to the per-read view allocation and extra property lookups in
-// string_from_buffer.
-const stringConverter = (() => {
-    const encoder = new TextEncoder();
-    const decoder: { decode(input: UniffiByteArray): string } =
-        typeof TextDecoder !== "undefined"
-            ? new TextDecoder()
-            : {
-                  decode: (bytes: UniffiByteArray) =>
-                      nativeModule().ubrn_uniffi_internal_fn_func_ffi__string_from_buffer(
-                          bytes,
-                          undefined as any,
-                      ) as string,
-              };
-    return {
-        // Single-string lower() uses the C++ helper — TextEncoder.encode
-        // measured ~43% slower on takeString benchmarks.
-        stringToBytes: (s: string) =>
-            nativeModule().ubrn_uniffi_internal_fn_func_ffi__string_to_buffer(s, undefined as any),
-        bytesToString: (ab: UniffiByteArray) => decoder.decode(ab),
-        // Direct C++ call — bypasses uniffiCaller.rustCall() overhead.
-        // Matters for N-element arrays.
-        stringByteLength: (s: string) =>
-            nativeModule().ubrn_uniffi_internal_fn_func_ffi__string_to_byte_length(s, undefined as any) as number,
-        // Encode directly into the RustBuffer backing store via
-        // TextEncoder.encodeInto — zero intermediate allocation. Replaces
-        // the old C++ write_string_into_buffer helper.
-        writeStringIntoBuffer: (s: string, buf: any, offset: number): number => {
-            const view = new Uint8Array(
-                buf.arrayBuffer,
-                offset,
-                buf.arrayBuffer.byteLength - offset,
-            );
-            return encoder.encodeInto(s, view).written;
-        },
-        // Dedicated C++ helper — avoids per-read Uint8Array allocation and
-        // the double property-lookup in string_from_buffer.
-        readStringFromBuffer: (buf: any, offset: number, length: number): string =>
-            nativeModule().ubrn_uniffi_internal_fn_func_ffi__read_string_from_buffer(buf, offset, length) as string,
-    };
+/**
+ * One device's shareable pairing data — see `pm_core::PairingPayload`.
+ * Byte fields, not strings: this is meant to be packed as a whole (by the
+ * RN layer, into a QR code or paste code), not read field-by-field.
+ */
+export type FfiPairingPayload = {
+    identityKey: ArrayBuffer,
+    curve25519Key: ArrayBuffer,
+    oneTimeKey: ArrayBuffer,
+    nonce: ArrayBuffer,
+    serverAddr?: ArrayBuffer
+}
+
+/**
+ * Generated factory for {@link FfiPairingPayload} record objects.
+ */
+export const FfiPairingPayload = (() => {
+    const defaults = () => ({
+    });
+    const create = (() => {
+        return uniffiCreateRecord<FfiPairingPayload, ReturnType<typeof defaults>>(defaults);
+    })();
+    return Object.freeze({
+        create,
+        new: create,
+        defaults: () => Object.freeze(defaults()) as Partial<FfiPairingPayload>,
+    });
 })();
-const FfiConverterString = uniffiCreateFfiConverterString(stringConverter);
+
+const FfiConverterTypeFfiPairingPayload = (() => {
+    type TypeName = FfiPairingPayload;
+    class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+        read(from: RustBuffer): TypeName {
+            return {
+                identityKey: FfiConverterArrayBuffer.read(from), 
+                curve25519Key: FfiConverterArrayBuffer.read(from), 
+                oneTimeKey: FfiConverterArrayBuffer.read(from), 
+                nonce: FfiConverterArrayBuffer.read(from), 
+                serverAddr: FfiConverterOptionalBytes.read(from)
+            };
+        }
+        write(value: TypeName, into: RustBuffer): void {
+            FfiConverterArrayBuffer.write(value.identityKey, into);
+            FfiConverterArrayBuffer.write(value.curve25519Key, into);
+            FfiConverterArrayBuffer.write(value.oneTimeKey, into);
+            FfiConverterArrayBuffer.write(value.nonce, into);
+            FfiConverterOptionalBytes.write(value.serverAddr, into);
+        }
+        allocationSize(value: TypeName): number {
+            return FfiConverterArrayBuffer.allocationSize(value.identityKey) +
+             FfiConverterArrayBuffer.allocationSize(value.curve25519Key) +
+             FfiConverterArrayBuffer.allocationSize(value.oneTimeKey) +
+             FfiConverterArrayBuffer.allocationSize(value.nonce) +
+             FfiConverterOptionalBytes.allocationSize(value.serverAddr);
+            
+        }
+    };
+    return new FFIConverter();
+})();
 
 
 // Error type: FfiError
@@ -235,17 +375,46 @@ const FfiConverterTypeFfiError = (() => {
  */
 export interface FfiClientLike {
     
-    addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: ArrayBuffer | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<bigint>;
+    addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: string | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<bigint>;
+/**
+ * Completes a pairing exchange: `their` is the partner's
+ * `pairing_payload()`, and `my_nonce` is the `nonce` from *this*
+ * device's own `pairing_payload()` call for the same attempt.
+ */
+    addContactFromPayload(their: FfiPairingPayload, myNonce: ArrayBuffer, displayName: string | undefined, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<bigint>;
+    clearOwnServerAddr(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
     curve25519Key(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer>;
+/**
+ * Assembles and encrypts the same backup bundle as `push_backup`, but
+ * returns the ciphertext directly instead of pushing it to a Server —
+ * works with no Server mailbox configured at all.
+ */
+    exportBackup(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<ArrayBuffer>;
 /**
  * Generates a one-time key for a pairing partner (stand-in for what a
  * real QR payload would carry — see `pm-core`'s docs).
  */
     generateOneTimeKey(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<ArrayBuffer>;
     identityKey(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer>;
+    listContacts(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<Array<FfiContact>>;
     messagesForContact(contactId: bigint, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<Array<FfiMessage>>;
+/**
+ * This device's own Server mailbox address, if it has configured one.
+ */
+    ownServerAddr(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<string | undefined>;
+/**
+ * Produces this device's shareable pairing data. Hold onto the
+ * returned `nonce` — it's needed again, unchanged, when this same
+ * pairing attempt is completed via `add_contact_from_payload`.
+ */
+    pairingPayload(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<FfiPairingPayload>;
     pushBackup(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
     send(contactId: bigint, plaintext: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
+/**
+ * Configures this device's own Server mailbox from a pasted/scanned
+ * address string.
+ */
+    setOwnServerAddr(addr: string, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
 /**
  * Fetches and processes new messages from this client's own Server.
  * Returns how many were processed.
@@ -276,20 +445,55 @@ private constructor(pointer: UniffiHandle) {
 
     
 /**
- * Opens (creating if needed) a client backed by the encrypted store at
- * `store_path`, for the identity the 24-word `seed_phrase` derives.
- * `server_addr` is this device's own Server mailbox address (bincode-
- * serialized `iroh::EndpointAddr` bytes, as produced by
- * `own_server_addr()` elsewhere on this same client), or `None` for a
- * Local-only client.
+ * Restores identity, contacts, and message history from a manually
+ * supplied encrypted backup file's bytes (as produced by
+ * `export_backup`), rather than fetching one from a Server.
  */
-    static async open(seedPhrase: string, storePath: string, serverAddr: ArrayBuffer | undefined, asyncOpts_?: { signal: AbortSignal }): Promise<FfiClientLike> /*throws*/ {
+    static async importBackup(seedPhrase: string, storePath: string, backupBytes: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<FfiClientLike> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
         return await uniffiRustCallAsync(
             /*rustCaller:*/ uniffiCaller,
             /*rustFutureFunc:*/ () => {
-                return nativeModule().ubrn_uniffi_pm_ffi_fn_constructor_fficlient_open(FfiConverterString.lower(seedPhrase, nativeModule().rustbuffer_alloc),FfiConverterString.lower(storePath, nativeModule().rustbuffer_alloc),FfiConverterOptionalBytes.lower(serverAddr, nativeModule().rustbuffer_alloc)
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_constructor_fficlient_import_backup(FfiConverterString.lower(seedPhrase, nativeModule().rustbuffer_alloc),FfiConverterString.lower(storePath, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(backupBytes, nativeModule().rustbuffer_alloc)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_u64,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_u64,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_u64,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_u64,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterTypeFfiClient.lift.bind(FfiConverterTypeFfiClient),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * Opens (creating if needed) a client backed by the encrypted store at
+ * `store_path`, for the identity the 24-word `seed_phrase` derives.
+ * This device's own Server mailbox (if any) is remembered from a
+ * previous `set_own_server_addr` call, not supplied here — see
+ * `own_server_addr`.
+ */
+    static async open(seedPhrase: string, storePath: string, asyncOpts_?: { signal: AbortSignal }): Promise<FfiClientLike> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_constructor_fficlient_open(FfiConverterString.lower(seedPhrase, nativeModule().rustbuffer_alloc),FfiConverterString.lower(storePath, nativeModule().rustbuffer_alloc)
                 );
             },
             /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_u64,
@@ -319,13 +523,13 @@ private constructor(pointer: UniffiHandle) {
  * previously pushed to `server_addr` — see `pm-core`'s docs for why
  * this address must be supplied directly rather than looked up.
  */
-    static async restore(seedPhrase: string, storePath: string, serverAddr: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<FfiClientLike> /*throws*/ {
+    static async restore(seedPhrase: string, storePath: string, serverAddr: string, asyncOpts_?: { signal: AbortSignal }): Promise<FfiClientLike> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
         return await uniffiRustCallAsync(
             /*rustCaller:*/ uniffiCaller,
             /*rustFutureFunc:*/ () => {
-                return nativeModule().ubrn_uniffi_pm_ffi_fn_constructor_fficlient_restore(FfiConverterString.lower(seedPhrase, nativeModule().rustbuffer_alloc),FfiConverterString.lower(storePath, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(serverAddr, nativeModule().rustbuffer_alloc)
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_constructor_fficlient_restore(FfiConverterString.lower(seedPhrase, nativeModule().rustbuffer_alloc),FfiConverterString.lower(storePath, nativeModule().rustbuffer_alloc),FfiConverterString.lower(serverAddr, nativeModule().rustbuffer_alloc)
                 );
             },
             /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_u64,
@@ -352,14 +556,14 @@ private constructor(pointer: UniffiHandle) {
     
 
     
-    async addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: ArrayBuffer | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<bigint> /*throws*/ {
+    async addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: string | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<bigint> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
         return await uniffiRustCallAsync(
             /*rustCaller:*/ uniffiCaller,
             /*rustFutureFunc:*/ () => {
                 return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact(
-                    uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterArrayBuffer.lower(theirIdentityKey, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirCurve25519Key, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirOneTimeKey, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(displayName, nativeModule().rustbuffer_alloc),FfiConverterOptionalBytes.lower(theirServerAddr, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(pairSecret, nativeModule().rustbuffer_alloc)
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterArrayBuffer.lower(theirIdentityKey, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirCurve25519Key, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirOneTimeKey, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(displayName, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(theirServerAddr, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(pairSecret, nativeModule().rustbuffer_alloc)
                 );
             },
             /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_i64,
@@ -372,6 +576,70 @@ private constructor(pointer: UniffiHandle) {
             // export. The bytes the runtime hands back must be deserialized
             // here using the per-callable return-type converter.
             /*liftFunc:*/ FfiConverterInt64.lift.bind(FfiConverterInt64),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * Completes a pairing exchange: `their` is the partner's
+ * `pairing_payload()`, and `my_nonce` is the `nonce` from *this*
+ * device's own `pairing_payload()` call for the same attempt.
+ */
+    async addContactFromPayload(their: FfiPairingPayload, myNonce: ArrayBuffer, displayName: string | undefined, asyncOpts_?: { signal: AbortSignal }): Promise<bigint> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact_from_payload(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterTypeFfiPairingPayload.lower(their, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(myNonce, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(displayName, nativeModule().rustbuffer_alloc)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_i64,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_i64,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_i64,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_i64,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterInt64.lift.bind(FfiConverterInt64),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+    async clearOwnServerAddr(asyncOpts_?: { signal: AbortSignal }): Promise<void> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_clear_own_server_addr(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_void,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_void,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_void,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_void,
+            /*liftFunc:*/ (_v) => {},
             /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
             /*asyncOpts:*/ asyncOpts_,
             /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
@@ -407,6 +675,43 @@ private constructor(pointer: UniffiHandle) {
             /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
             /*asyncOpts:*/ asyncOpts_,
             
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * Assembles and encrypts the same backup bundle as `push_backup`, but
+ * returns the ciphertext directly instead of pushing it to a Server —
+ * works with no Server mailbox configured at all.
+ */
+    async exportBackup(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_export_backup(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
         );
     } catch (__error: any) {
         if (uniffiIsDebug && __error instanceof Error) {
@@ -484,6 +789,38 @@ private constructor(pointer: UniffiHandle) {
     }
     }
     
+    async listContacts(asyncOpts_?: { signal: AbortSignal }): Promise<Array<FfiContact>> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_list_contacts(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterSequenceTypeFfiContact.lift.bind(FfiConverterSequenceTypeFfiContact),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
     async messagesForContact(contactId: bigint, asyncOpts_?: { signal: AbortSignal }): Promise<Array<FfiMessage>> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
@@ -504,6 +841,78 @@ private constructor(pointer: UniffiHandle) {
             // export. The bytes the runtime hands back must be deserialized
             // here using the per-callable return-type converter.
             /*liftFunc:*/ FfiConverterSequenceTypeFfiMessage.lift.bind(FfiConverterSequenceTypeFfiMessage),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * This device's own Server mailbox address, if it has configured one.
+ */
+    async ownServerAddr(asyncOpts_?: { signal: AbortSignal }): Promise<string | undefined> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_own_server_addr(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterOptionalString.lift.bind(FfiConverterOptionalString),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * Produces this device's shareable pairing data. Hold onto the
+ * returned `nonce` — it's needed again, unchanged, when this same
+ * pairing attempt is completed via `add_contact_from_payload`.
+ */
+    async pairingPayload(asyncOpts_?: { signal: AbortSignal }): Promise<FfiPairingPayload> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_pairing_payload(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterTypeFfiPairingPayload.lift.bind(FfiConverterTypeFfiPairingPayload),
             /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
             /*asyncOpts:*/ asyncOpts_,
             /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
@@ -551,6 +960,37 @@ private constructor(pointer: UniffiHandle) {
             /*rustFutureFunc:*/ () => {
                 return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_send(
                     uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterInt64.lower(contactId, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(plaintext, nativeModule().rustbuffer_alloc)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_void,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_void,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_void,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_void,
+            /*liftFunc:*/ (_v) => {},
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * Configures this device's own Server mailbox from a pasted/scanned
+ * address string.
+ */
+    async setOwnServerAddr(addr: string, asyncOpts_?: { signal: AbortSignal }): Promise<void> /*throws*/ {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_set_own_server_addr(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterString.lower(addr, nativeModule().rustbuffer_alloc)
                 );
             },
             /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_void,
@@ -682,6 +1122,9 @@ const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString);
 // FfiConverter for ArrayBuffer | undefined
 const FfiConverterOptionalBytes = new FfiConverterOptional(FfiConverterArrayBuffer);
 
+// FfiConverter for Array<FfiContact>
+const FfiConverterSequenceTypeFfiContact = new FfiConverterArray(FfiConverterTypeFfiContact);
+
 // FfiConverter for Array<FfiMessage>
 const FfiConverterSequenceTypeFfiMessage = new FfiConverterArray(FfiConverterTypeFfiMessage);
 
@@ -704,17 +1147,32 @@ function uniffiEnsureInitialized() {
     if (bindingsContractVersion !== scaffoldingContractVersion) {
         throw new UniffiInternalError.ContractVersionMismatch(scaffoldingContractVersion, bindingsContractVersion);
     }
-    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_constructor_fficlient_open() !== 2174) {
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_func_generate_seed_phrase() !== 48607) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_func_generate_seed_phrase");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_constructor_fficlient_import_backup() !== 62665) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_constructor_fficlient_import_backup");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_constructor_fficlient_open() !== 10420) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_constructor_fficlient_open");
     }
-    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_constructor_fficlient_restore() !== 2986) {
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_constructor_fficlient_restore() !== 55085) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_constructor_fficlient_restore");
     }
-    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_add_contact() !== 32074) {
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_add_contact() !== 36077) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_add_contact");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_add_contact_from_payload() !== 56312) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_add_contact_from_payload");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_clear_own_server_addr() !== 32541) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_clear_own_server_addr");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_curve25519_key() !== 17298) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_curve25519_key");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_export_backup() !== 50906) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_export_backup");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_generate_one_time_key() !== 58555) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_generate_one_time_key");
@@ -722,14 +1180,26 @@ function uniffiEnsureInitialized() {
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_identity_key() !== 38621) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_identity_key");
     }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_list_contacts() !== 32322) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_list_contacts");
+    }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact() !== 50272) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_own_server_addr() !== 10484) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_own_server_addr");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_pairing_payload() !== 28104) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_pairing_payload");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_push_backup() !== 30420) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_push_backup");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_send() !== 39571) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_send");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr() !== 62009) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_sync() !== 61603) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_sync");
@@ -741,7 +1211,9 @@ export default Object.freeze({
   initialize: uniffiEnsureInitialized,
   converters: {
     FfiConverterTypeFfiClient,
+    FfiConverterTypeFfiContact,
     FfiConverterTypeFfiError,
     FfiConverterTypeFfiMessage,
+    FfiConverterTypeFfiPairingPayload,
   }
 });
