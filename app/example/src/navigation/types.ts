@@ -4,6 +4,7 @@ export type RootStackParamList = {
   Pairing: undefined;
   ManageMailbox: undefined;
   ServerMailboxSetup: undefined;
+  NodeSetup: undefined;
   RecoveryPhrase: undefined;
   BackupExport: undefined;
 };

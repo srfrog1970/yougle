@@ -44,6 +44,16 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
     let bob = Client::open(&bob_seed, &dir.path().join("bob-original.sqlite"))
         .await
         .unwrap();
+
+    // A self-hosted pm-node needs exactly these two values from its owner
+    // (see pm-node::main's PM_NODE_MAILBOX_KEY/PM_NODE_TRANSPORT_KEY docs) —
+    // confirm Client exposes precisely what Identity::derive produces, not
+    // some other derived value.
+    assert_eq!(alice.mailbox_key(), alice_identity.mailbox_key);
+    assert_eq!(
+        alice.server_transport_key(),
+        alice_identity.server_transport_key
+    );
     bob.set_own_server_addr(bob_server_addr.clone()).unwrap();
 
     // --- Mutual pairing stand-in: each generates a one-time key for the

@@ -5,6 +5,7 @@ import BackupExportScreen from '../screens/BackupExportScreen';
 import ChatScreen from '../screens/ChatScreen';
 import ConversationListScreen from '../screens/ConversationListScreen';
 import ManageMailboxScreen from '../screens/ManageMailboxScreen';
+import NodeSetupScreen from '../screens/NodeSetupScreen';
 import PairingScreen from '../screens/PairingScreen';
 import RecoveryPhraseScreen from '../screens/RecoveryPhraseScreen';
 import ServerMailboxSetupScreen from '../screens/ServerMailboxSetupScreen';
@@ -35,6 +36,11 @@ export default function RootNavigator() {
         name="ServerMailboxSetup"
         component={ServerMailboxSetupScreen}
         options={{ title: 'Add Server mailbox' }}
+      />
+      <Stack.Screen
+        name="NodeSetup"
+        component={NodeSetupScreen}
+        options={{ title: 'Set up your own node' }}
       />
       <Stack.Screen
         name="RecoveryPhrase"

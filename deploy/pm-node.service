@@ -1,0 +1,16 @@
+[Unit]
+Description=pm-node - self-hosted Server mailbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# An unprivileged, kernel-managed dynamic user - no manual `useradd` step
+# to get right (or wrong) for a solo self-hoster.
+DynamicUser=yes
+ExecStart=/usr/local/bin/pm-node
+EnvironmentFile=/etc/pm-node/pm-node.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

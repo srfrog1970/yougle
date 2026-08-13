@@ -442,6 +442,12 @@ export interface FfiClientLike {
     generateOneTimeKey(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<ArrayBuffer>;
     identityKey(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer>;
     listContacts(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<Array<FfiContact>>;
+/**
+ * This device's own mailbox key — one of the two values a self-hosted
+ * `pm-node` needs (`PM_NODE_MAILBOX_KEY`) to run as this identity's own
+ * Server. See `deploy/README.md`.
+ */
+    mailboxKey(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer>;
     messagesForContact(contactId: bigint, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<Array<FfiMessage>>;
 /**
  * This device's own Server mailbox address, if it has configured one.
@@ -461,6 +467,11 @@ export interface FfiClientLike {
  * failure means for the caller).
  */
     send(contactId: bigint, plaintext: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
+/**
+ * This device's own self-hosted-node transport identity — the other
+ * value a self-hosted `pm-node` needs (`PM_NODE_TRANSPORT_KEY`).
+ */
+    serverTransportKey(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer>;
 /**
  * Configures this device's own Server mailbox from a pasted/scanned
  * address string.
@@ -873,6 +884,43 @@ private constructor(pointer: UniffiHandle) {
     }
     }
     
+/**
+ * This device's own mailbox key — one of the two values a self-hosted
+ * `pm-node` needs (`PM_NODE_MAILBOX_KEY`) to run as this identity's own
+ * Server. See `deploy/README.md`.
+ */
+    async mailboxKey(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer> {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_mailbox_key(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
     async messagesForContact(contactId: bigint, asyncOpts_?: { signal: AbortSignal }): Promise<Array<FfiMessage>> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
@@ -1028,6 +1076,42 @@ private constructor(pointer: UniffiHandle) {
             /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
             /*asyncOpts:*/ asyncOpts_,
             /*errorHandler:*/ FfiConverterTypeFfiError.lift.bind(FfiConverterTypeFfiError)
+        );
+    } catch (__error: any) {
+        if (uniffiIsDebug && __error instanceof Error) {
+            __error.stack = __stack;
+        }
+        throw __error;
+    }
+    }
+    
+/**
+ * This device's own self-hosted-node transport identity — the other
+ * value a self-hosted `pm-node` needs (`PM_NODE_TRANSPORT_KEY`).
+ */
+    async serverTransportKey(asyncOpts_?: { signal: AbortSignal }): Promise<ArrayBuffer> {
+    const __stack = uniffiIsDebug ? new Error().stack : undefined;
+    try {
+        return await uniffiRustCallAsync(
+            /*rustCaller:*/ uniffiCaller,
+            /*rustFutureFunc:*/ () => {
+                return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_server_transport_key(
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this)
+                );
+            },
+            /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_rust_buffer,
+            /*cancelFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_cancel_rust_buffer,
+            /*completeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_complete_rust_buffer,
+            /*freeFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_free_rust_buffer,
+            // Async returns always go through the JS-side converter: the
+            // FFI symbol returns the future handle (u64), and the user-level
+            // RustBuffer comes back via the shared `rust_future_complete_*`
+            // export. The bytes the runtime hands back must be deserialized
+            // here using the per-callable return-type converter.
+            /*liftFunc:*/ FfiConverterArrayBuffer.lift.bind(FfiConverterArrayBuffer),
+            /*liftString:*/ FfiConverterString.lift.bind(FfiConverterString),
+            /*asyncOpts:*/ asyncOpts_,
+            
         );
     } catch (__error: any) {
         if (uniffiIsDebug && __error instanceof Error) {
@@ -1245,6 +1329,9 @@ function uniffiEnsureInitialized() {
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_list_contacts() !== 32322) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_list_contacts");
     }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key() !== 808) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_mailbox_key");
+    }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact() !== 50272) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact");
     }
@@ -1259,6 +1346,9 @@ function uniffiEnsureInitialized() {
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_send() !== 21885) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_send");
+    }
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key() !== 29712) {
+        throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_server_transport_key");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr() !== 62009) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr");

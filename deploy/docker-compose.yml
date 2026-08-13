@@ -1,0 +1,18 @@
+# From this directory: copy .env.example to .env, fill in both keys (see
+# ../README.md), then `docker compose up -d`.
+services:
+  pm-node:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: .env
+    restart: unless-stopped
+    # pm-node binds an *ephemeral* UDP port — its network identity is
+    # deterministic (from PM_NODE_TRANSPORT_KEY), but which port it lands
+    # on isn't, and pm-node has no way to pin one yet (a possible future
+    # addition, not needed to get running today). Docker's normal bridge
+    # networking needs a fixed port to publish/forward, so it doesn't fit
+    # here without that. Host networking sidesteps the whole problem: the
+    # container's traffic behaves exactly like running the binary directly
+    # on this machine, which is also what's actually been tested.
+    network_mode: host

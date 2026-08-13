@@ -81,11 +81,13 @@ interface NativeModuleInterface {
     ubrn_uniffi_pm_ffi_fn_method_fficlient_generate_one_time_key(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_identity_key(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_list_contacts(uniffiSelf: bigint): bigint;
+    ubrn_uniffi_pm_ffi_fn_method_fficlient_mailbox_key(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_messages_for_contact(uniffiSelf: bigint, contactId: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_own_server_addr(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_pairing_payload(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_push_backup(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_send(uniffiSelf: bigint, contactId: bigint, plaintext: Uint8Array): bigint;
+    ubrn_uniffi_pm_ffi_fn_method_fficlient_server_transport_key(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_set_own_server_addr(uniffiSelf: bigint, addr: Uint8Array): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_sync(uniffiSelf: bigint): bigint;
     ubrn_ffi_pm_ffi_uniffi_contract_version(): number;
@@ -101,11 +103,13 @@ interface NativeModuleInterface {
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_generate_one_time_key(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_identity_key(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_list_contacts(): number;
+    ubrn_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_own_server_addr(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_pairing_payload(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_push_backup(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_send(): number;
+    ubrn_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr(): number;
     ubrn_uniffi_pm_ffi_checksum_method_fficlient_sync(): number;
     ubrn_uniffi_internal_fn_method_fficlient_ffi__bless_pointer(pointer: bigint, uniffi_out_err: UniffiRustCallStatus): UniffiGcObject;

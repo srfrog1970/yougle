@@ -248,6 +248,19 @@ impl FfiClient {
         compat(async { self.inner.curve25519_key().to_vec() }).await
     }
 
+    /// This device's own mailbox key — one of the two values a self-hosted
+    /// `pm-node` needs (`PM_NODE_MAILBOX_KEY`) to run as this identity's own
+    /// Server. See `deploy/README.md`.
+    pub async fn mailbox_key(&self) -> Vec<u8> {
+        compat(async { self.inner.mailbox_key().to_vec() }).await
+    }
+
+    /// This device's own self-hosted-node transport identity — the other
+    /// value a self-hosted `pm-node` needs (`PM_NODE_TRANSPORT_KEY`).
+    pub async fn server_transport_key(&self) -> Vec<u8> {
+        compat(async { self.inner.server_transport_key().to_vec() }).await
+    }
+
     /// Generates a one-time key for a pairing partner (stand-in for what a
     /// real QR payload would carry — see `pm-core`'s docs).
     pub async fn generate_one_time_key(&self) -> Result<Vec<u8>, FfiError> {

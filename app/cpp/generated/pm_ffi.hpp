@@ -35,11 +35,13 @@ class NativePmFfi : public jsi::HostObject {
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_generate_one_time_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_identity_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_list_contacts(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_mailbox_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_messages_for_contact(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_own_server_addr(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_pairing_payload(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_push_backup(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_send(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_server_transport_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_set_own_server_addr(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_method_fficlient_sync(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_fn_func_generate_seed_phrase(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
@@ -100,11 +102,13 @@ class NativePmFfi : public jsi::HostObject {
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_generate_one_time_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_identity_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_list_contacts(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_own_server_addr(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_pairing_payload(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_push_backup(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_send(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
+    jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_method_fficlient_sync(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);
     jsi::Value cpp_uniffi_pm_ffi_checksum_constructor_fficlient_import_backup(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count);

@@ -185,6 +185,9 @@ extern "C" {
     /*handle*/ uint64_t uniffi_pm_ffi_fn_method_fficlient_list_contacts(
         /*handle*/ uint64_t ptr
     );
+    /*handle*/ uint64_t uniffi_pm_ffi_fn_method_fficlient_mailbox_key(
+        /*handle*/ uint64_t ptr
+    );
     /*handle*/ uint64_t uniffi_pm_ffi_fn_method_fficlient_messages_for_contact(
         /*handle*/ uint64_t ptr, 
         int64_t contact_id
@@ -202,6 +205,9 @@ extern "C" {
         /*handle*/ uint64_t ptr, 
         int64_t contact_id, 
         RustBuffer plaintext
+    );
+    /*handle*/ uint64_t uniffi_pm_ffi_fn_method_fficlient_server_transport_key(
+        /*handle*/ uint64_t ptr
     );
     /*handle*/ uint64_t uniffi_pm_ffi_fn_method_fficlient_set_own_server_addr(
         /*handle*/ uint64_t ptr, 
@@ -427,6 +433,8 @@ extern "C" {
     );
     uint16_t uniffi_pm_ffi_checksum_method_fficlient_list_contacts(
     );
+    uint16_t uniffi_pm_ffi_checksum_method_fficlient_mailbox_key(
+    );
     uint16_t uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact(
     );
     uint16_t uniffi_pm_ffi_checksum_method_fficlient_own_server_addr(
@@ -436,6 +444,8 @@ extern "C" {
     uint16_t uniffi_pm_ffi_checksum_method_fficlient_push_backup(
     );
     uint16_t uniffi_pm_ffi_checksum_method_fficlient_send(
+    );
+    uint16_t uniffi_pm_ffi_checksum_method_fficlient_server_transport_key(
     );
     uint16_t uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr(
     );
@@ -2011,6 +2021,14 @@ NativePmFfi::NativePmFfi(
             return this->cpp_uniffi_pm_ffi_fn_method_fficlient_list_contacts(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_pm_ffi_fn_method_fficlient_mailbox_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_fn_method_fficlient_mailbox_key"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_pm_ffi_fn_method_fficlient_mailbox_key(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_pm_ffi_fn_method_fficlient_messages_for_contact"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_fn_method_fficlient_messages_for_contact"),
@@ -2049,6 +2067,14 @@ NativePmFfi::NativePmFfi(
         3,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_pm_ffi_fn_method_fficlient_send(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_pm_ffi_fn_method_fficlient_server_transport_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_fn_method_fficlient_server_transport_key"),
+        1,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_pm_ffi_fn_method_fficlient_server_transport_key(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_pm_ffi_fn_method_fficlient_set_own_server_addr"] = jsi::Function::createFromHostFunction(
@@ -2531,6 +2557,14 @@ NativePmFfi::NativePmFfi(
             return this->cpp_uniffi_pm_ffi_checksum_method_fficlient_list_contacts(rt, thisVal, args, count);
         }
     );
+    props["ubrn_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key(rt, thisVal, args, count);
+        }
+    );
     props["ubrn_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact"),
@@ -2569,6 +2603,14 @@ NativePmFfi::NativePmFfi(
         0,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_pm_ffi_checksum_method_fficlient_send(rt, thisVal, args, count);
+        }
+    );
+    props["ubrn_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key"] = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key"),
+        0,
+        [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
+            return this->cpp_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key(rt, thisVal, args, count);
         }
     );
     props["ubrn_uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr"] = jsi::Function::createFromHostFunction(
@@ -2873,6 +2915,13 @@ jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_list_contacts(jsi:
         
         return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
 }
+jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_mailbox_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_pm_ffi_fn_method_fficlient_mailbox_key(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
 jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_messages_for_contact(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_pm_ffi_fn_method_fficlient_messages_for_contact(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi_jsi::Bridging<int64_t>::fromJs(rt, callInvoker, args[1])
         );
@@ -2903,6 +2952,13 @@ jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_push_backup(jsi::R
 }
 jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_send(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_pm_ffi_fn_method_fficlient_send(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi_jsi::Bridging<int64_t>::fromJs(rt, callInvoker, args[1]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2])
+        );
+
+        
+        return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_server_transport_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_pm_ffi_fn_method_fficlient_server_transport_key(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0])
         );
 
         
@@ -3366,6 +3422,13 @@ jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_checksum_method_fficlient_list_contact
         
         return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
 }
+jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_checksum_method_fficlient_mailbox_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_pm_ffi_checksum_method_fficlient_mailbox_key(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
 jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_pm_ffi_checksum_method_fficlient_messages_for_contact(
         );
@@ -3396,6 +3459,13 @@ jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_checksum_method_fficlient_push_backup(
 }
 jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_checksum_method_fficlient_send(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
         auto value = uniffi_pm_ffi_checksum_method_fficlient_send(
+        );
+
+        
+        return uniffi_jsi::Bridging<uint16_t>::toJs(rt, callInvoker, value);
+}
+jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_checksum_method_fficlient_server_transport_key(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
+        auto value = uniffi_pm_ffi_checksum_method_fficlient_server_transport_key(
         );
 
         

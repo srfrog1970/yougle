@@ -191,6 +191,23 @@ impl Client {
             .to_bytes()
     }
 
+    /// This device's own mailbox key — one of the two values a self-hosted
+    /// `pm-node` needs (as `PM_NODE_MAILBOX_KEY`) to run *as this identity's*
+    /// Server. See `pm-node::main`'s own docs for why there's no insecure
+    /// fallback for its counterpart, `server_transport_key`.
+    pub fn mailbox_key(&self) -> [u8; 32] {
+        self.shared.identity.mailbox_key
+    }
+
+    /// This device's own self-hosted-node transport identity — the other
+    /// value a self-hosted `pm-node` needs (as `PM_NODE_TRANSPORT_KEY`).
+    /// Deliberately distinct from `transport_key` (this device's *own*
+    /// Local-delivery identity, M6) — see `Identity`'s own doc comment for
+    /// why the two must never collide.
+    pub fn server_transport_key(&self) -> [u8; 32] {
+        self.shared.identity.server_transport_key
+    }
+
     /// Generates and returns one of this client's vodozemac one-time keys,
     /// ready to hand to a pairing partner (see `pairing_payload`).
     pub fn generate_one_time_key(&self) -> Result<[u8; 32]> {

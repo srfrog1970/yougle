@@ -93,6 +93,13 @@ export default function ManageMailboxScreen() {
               onPress={() => navigation.navigate('ServerMailboxSetup')}>
               <Text style={styles.primaryButtonText}>Add Server mailbox</Text>
             </Pressable>
+            <Pressable
+              style={styles.linkRow}
+              onPress={() => navigation.navigate('NodeSetup')}>
+              <Text style={styles.linkText}>
+                Don't have one running yet? Set up your own node
+              </Text>
+            </Pressable>
           </>
         )}
       </View>
