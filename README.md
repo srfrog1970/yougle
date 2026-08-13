@@ -4,7 +4,9 @@ A privacy-focused, decentralized text messenger. No accounts, no phone numbers, 
 
 Every user gets an automatic, client-side **Local** mailbox for direct, live delivery. Anyone can optionally run their own self-hosted **Server** mailbox for durable, asynchronous delivery — always owned by the person running it, never a shared community operator.
 
-Status: **M0 in progress.** The product requirements are locked (see [`docs/PRD.md`](docs/PRD.md)). `pm-proto` (envelopes, padding, chain derivation) has an initial implementation with property tests and a pinned test vector; everything else is not yet started.
+Status: **M0 and M1 complete.** The product requirements are locked (see [`docs/PRD.md`](docs/PRD.md)). `pm-proto` (envelopes, padding, chain derivation), `pm-crypto` (seed handling, identity derivation, Olm sessions), and `pm-store` (SQLCipher-encrypted persistence, Lamport ordering) are implemented and tested — see each crate's README for what's covered. Everything past M1 (networking, sync, the app) is not yet started.
+
+Building requires `libssl-dev` and `pkg-config` (Debian/Ubuntu: `sudo apt-get install -y libssl-dev pkg-config`) for the bundled SQLCipher build in `pm-store`.
 
 ```
 cargo test    # run all workspace tests

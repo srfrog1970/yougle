@@ -1,0 +1,18 @@
+[package]
+name = "pm-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLCipher-encrypted local storage: schema, migrations, and Lamport-clock ordering."
+
+[dependencies]
+thiserror = { workspace = true }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
+hex = "0.4"
+
+[dev-dependencies]
+pm-proto = { path = "../pm-proto" }
+pm-crypto = { path = "../pm-crypto" }
+tempfile = "3"
+ed25519-dalek = "2"

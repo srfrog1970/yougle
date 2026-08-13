@@ -32,6 +32,23 @@ impl MyAccount {
         self.inner.curve25519_key()
     }
 
+    /// Serializes this account's state (identity + one-time keys) for
+    /// storage, so it can be restored with [`MyAccount::from_pickle`] after
+    /// an app restart. Uses JSON rather than bincode: vodozemac's pickle
+    /// types require a self-describing serde format.
+    pub fn pickle(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.inner.pickle()).expect("AccountPickle serialization cannot fail")
+    }
+
+    /// Restores an account previously serialized with [`MyAccount::pickle`].
+    pub fn from_pickle(bytes: &[u8]) -> Result<Self> {
+        let pickle = serde_json::from_slice(bytes)
+            .map_err(|e| CryptoError::MalformedMessage(e.to_string()))?;
+        Ok(Self {
+            inner: Account::from_pickle(pickle),
+        })
+    }
+
     /// Generates `count` one-time keys and returns their public parts, ready
     /// to publish (e.g., embedded in a pairing QR).
     pub fn generate_one_time_keys(&mut self, count: usize) -> HashMap<KeyId, Curve25519PublicKey> {
@@ -120,6 +137,23 @@ impl MySession {
             .decrypt(&message)
             .map_err(|e| CryptoError::Decryption(e.to_string()))
     }
+
+    /// Serializes this session's ratchet state for storage, so it can be
+    /// restored with [`MySession::from_pickle`] after an app restart. Uses
+    /// JSON rather than bincode: vodozemac's pickle types require a
+    /// self-describing serde format.
+    pub fn pickle(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.inner.pickle()).expect("SessionPickle serialization cannot fail")
+    }
+
+    /// Restores a session previously serialized with [`MySession::pickle`].
+    pub fn from_pickle(bytes: &[u8]) -> Result<Self> {
+        let pickle = serde_json::from_slice(bytes)
+            .map_err(|e| CryptoError::MalformedMessage(e.to_string()))?;
+        Ok(Self {
+            inner: Session::from_pickle(pickle),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +191,32 @@ mod tests {
         let (olm_type, ciphertext) = alice_session.encrypt(b"how are you").unwrap();
         let second = bob_session.decrypt(olm_type, &ciphertext).unwrap();
         assert_eq!(second, b"how are you");
+    }
+
+    #[test]
+    fn session_survives_a_pickle_roundtrip_mid_conversation() {
+        let alice = MyAccount::new();
+        let mut bob = MyAccount::new();
+        let bob_otks = bob.generate_one_time_keys(1);
+        let bob_otk = *bob_otks.values().next().unwrap();
+
+        let mut alice_session = alice
+            .create_outbound_session(bob.curve25519_key(), bob_otk)
+            .unwrap();
+        let (olm_type, ciphertext) = alice_session.encrypt(b"first").unwrap();
+        let (bob_session, _) = bob
+            .accept_incoming(alice.curve25519_key(), olm_type, &ciphertext)
+            .unwrap();
+
+        // Simulate an app restart: serialize bob's session, drop it, and
+        // restore a fresh instance from just the pickled bytes.
+        let pickled = bob_session.pickle();
+        drop(bob_session);
+        let mut restored_bob_session = MySession::from_pickle(&pickled).unwrap();
+
+        let (olm_type, ciphertext) = alice_session.encrypt(b"still there?").unwrap();
+        let plaintext = restored_bob_session.decrypt(olm_type, &ciphertext).unwrap();
+        assert_eq!(plaintext, b"still there?");
     }
 
     #[test]
