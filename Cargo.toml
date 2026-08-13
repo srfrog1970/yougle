@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/pm-proto",
+    "crates/pm-crypto",
 ]
 
 [workspace.package]
