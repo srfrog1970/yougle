@@ -10,6 +10,8 @@ ios/Pods/
 ios/build/
 android/.gradle/
 android/app/build/
+# ubrn cross-compiled static libs (100MB+ each per ABI) — rebuild via `npx ubrn build android`
+**/jniLibs/
 *.log
 npm-debug.log*
 yarn-debug.log*

@@ -14,16 +14,28 @@ Status: M4 in progress. Scaffolded via `create-react-native-library` (turbo-modu
 
 This was built and is documented from a Linux (WSL2) machine, which has a hard, unavoidable limit: **iOS builds require Xcode, which only runs on macOS.** There's no way around that from any Linux box, ever.
 
-Beyond that expected limit, Android cross-compilation hit a real, unexpected one: `rustc` itself segfaults (SIGSEGV inside its LLVM backend) partway through compiling the `aarch64-linux-android` target — reproducibly, on ordinary, widely-used crates (`serde`, `zeroize`, `xml-rs`, and others, different ones each run), even fully serial (`CARGO_BUILD_JOBS=1`) with the stack size increased well past what `rustc` itself suggested (up to 128 MB). Host (`x86_64-unknown-linux-gnu`) builds have been completely stable across this entire project — dozens of clean `cargo build`/`cargo test` runs, zero crashes — so this looks specific to the aarch64-Android cross-compilation codegen path in this particular WSL2 environment, not a bug in this project's code. Likely worth trying on a native Linux machine or inside a proper Linux VM (as opposed to WSL2) before assuming it's something to fix here.
+Beyond that expected limit, Android cross-compilation initially hit a real, unexpected one, since diagnosed and worked around. `rustc`/LLVM (and even plain `cargo`/`rustc` on ordinary host builds) would intermittently segfault under full-parallelism builds. Kernel logs (`dmesg`) traced the actual root cause: this specific WSL2 kernel build (`6.18.33.2-microsoft-standard-WSL2`, confirmed latest via `wsl --update`) has a page-allocator race that corrupts physical page accounting under high concurrent allocation pressure — confirmed directly via `BUG: Bad page state` / `Tainted: [B]=BAD_PAGE` kernel messages showing the *same physical page frame* handed to two different processes at once (`cargo` and `rustc` simultaneously). This is a WSL2 guest-kernel bug, not a Rust, LLVM, or project-code bug, and it scales with the number of vCPUs contending for the allocator at once — this machine's `i7-12700KF` exposes 20 vCPUs to WSL2 (flattened P-core/E-core topology), and the race reproduced reliably under full parallelism but never once under reduced parallelism.
 
-What *is* verified end to end: `pm-ffi` itself compiles cleanly and passes its tests on the host target (confirming the uniffi interface is correct), and the whole pipeline up to native compilation — `uniffi-bindgen-react-native` config, Android NDK/SDK toolchain install, `cargo-ndk` invocation — runs and reaches `rustc` successfully. The break is specifically in `rustc`'s own aarch64 codegen, past the point where anything in this repo could be at fault.
+**Workaround (confirmed reliable across 3 clean builds, dev and release):** cap CPU affinity and Cargo's job count before building:
+
+```
+taskset -c 0-3 env CARGO_BUILD_JOBS=2 npx ubrn build android --and-generate
+```
+
+If this bug resurfaces on a future WSL2 kernel update, the diagnostic path was: check `dmesg` for `BUG: Bad page state` / `Tainted: [B]=BAD_PAGE` entries around the crash timestamp (not just the `segfault` line above them) — that confirms kernel-level corruption rather than an application bug, and the fix is the same parallelism reduction.
+
+What *is* verified end to end: `pm-ffi` compiles and passes its tests on the host target, and the full Android pipeline — `uniffi-bindgen-react-native` config, NDK/SDK toolchain, `cargo-ndk`, cross-compilation for all four ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`), `.a` copy into `jniLibs`, and Kotlin/TS binding generation — completes cleanly in both dev and release profiles.
 
 ## Setup
 
 ```
 npm install
-npx ubrn build android --and-generate   # requires ANDROID_NDK_HOME set (see below)
+taskset -c 0-3 env CARGO_BUILD_JOBS=2 npx ubrn build android --and-generate   # requires ANDROID_NDK_HOME set (see below)
 ```
+
+Add `--release` for a release build (also verified working under the same mitigation).
+
+The `taskset`/`CARGO_BUILD_JOBS` prefix works around a WSL2 kernel bug (see above) — on a native Linux machine or a fixed WSL2 kernel, a plain `npx ubrn build android --and-generate` should work.
 
 Requires, beyond what `pm-store` already needs (`libssl-dev`, `pkg-config`):
 - `cargo install cargo-ndk`
