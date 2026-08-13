@@ -48,14 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_into()
         .map_err(|_| "PM_NODE_TRANSPORT_KEY must decode to exactly 32 bytes")?;
 
-    let (router, _store) = spawn(mailbox_key, transport_key).await?;
-    router.endpoint().online().await;
-    let addr = router.endpoint().addr();
+    let node = spawn(mailbox_key, transport_key).await?;
+    node.endpoint().online().await;
+    let addr = node.endpoint().addr();
     println!("pm-node listening. Endpoint address (paste this into the app's Server mailbox setup screen):");
     println!("{}", pm_transport::encode_endpoint_addr(&addr)?);
 
     tokio::signal::ctrl_c().await?;
     println!("shutting down");
-    router.shutdown().await?;
+    node.shutdown().await?;
     Ok(())
 }

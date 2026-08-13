@@ -294,15 +294,17 @@ impl Client {
 
     /// Encrypts and delivers a message to a contact — via their Server
     /// mailbox if they have one on file, otherwise a direct Local P2P
-    /// attempt (`docs/PRD.md` Flow 3's first two cases; the third, a
-    /// sender's own Server retrying on a Local-only recipient's behalf, is
-    /// M7). Persists the message with whatever status delivery actually
-    /// achieved — `Sent` (written to their Server; `Delivered` follows
-    /// later via a receipt) or `Delivered` directly (a successful direct
-    /// attempt is already synchronous confirmation). A failed attempt
-    /// (including a direct-delivery timeout) returns an error and persists
-    /// nothing, leaving the caller free to retry — same "revert to compose
-    /// box" behavior the app's UI already implements for any `send` error.
+    /// attempt, falling back (M7) to this device's own Server retrying on
+    /// a schedule if that attempt fails and one is configured
+    /// (`docs/PRD.md` Flow 3's all three cases). Persists the message with
+    /// whatever status delivery actually achieved — `Sent` (written to
+    /// their Server, or queued on this device's own Server for retry;
+    /// `Delivered` follows later via a receipt, or `Failed` if the retry
+    /// schedule exhausts) or `Delivered` directly (a successful direct
+    /// attempt is already synchronous confirmation). A failed attempt with
+    /// no Server to fall back to returns an error and persists nothing,
+    /// leaving the caller free to retry — same "revert to compose box"
+    /// behavior the app's UI already implements for any `send` error.
     pub async fn send(&self, contact_id: i64, plaintext: &[u8]) -> Result<()> {
         self.shared.send(contact_id, plaintext).await
     }
@@ -562,18 +564,75 @@ impl ClientShared {
             let envelope = Envelope::new(olm_type, ciphertext, 0, lamport, sent_at, msg_id);
             let envelope_bytes = envelope.to_padded_bytes()?;
 
-            tokio::time::timeout(
-                DIRECT_DELIVERY_TIMEOUT,
-                self.node_client.call_direct(peer_addr, envelope_bytes),
-            )
-            .await
-            .map_err(|_| CoreError::DirectDeliveryTimedOut)??;
-            MessageStatus::Delivered
+            match self.try_direct(peer_addr, envelope_bytes.clone()).await {
+                Ok(()) => MessageStatus::Delivered,
+                Err(direct_err) => {
+                    // M7 (`docs/PRD.md` Flow 3's third case): the recipient
+                    // isn't reachable right now — if this device has its own
+                    // Server, hand delivery off to it instead of failing
+                    // outright. Its eventual success (or exhaustion) reaches
+                    // this message later via the ordinary receipt path (a
+                    // successful retry looks just like any other Local
+                    // delivery to its recipient) or `sync`'s
+                    // `PollFailedDeliveries`, not anything returned here.
+                    let my_addr = self.server_addr.lock().unwrap().clone();
+                    let queued = match my_addr {
+                        Some(my_addr) => self
+                            .schedule_retry(my_addr, msg_id, their_transport_key, envelope_bytes)
+                            .await
+                            .is_ok(),
+                        None => false,
+                    };
+                    if queued {
+                        MessageStatus::Sent
+                    } else {
+                        return Err(direct_err);
+                    }
+                }
+            }
         };
 
         self.store
             .save_session_pickle(contact_id, &session.pickle())?;
         Ok((msg_id, lamport, sent_at, status))
+    }
+
+    /// One direct-delivery attempt, bounded by `DIRECT_DELIVERY_TIMEOUT`.
+    /// Split out of `deliver` so a failure can be caught and weighed
+    /// against the M7 retry-queue fallback instead of always propagating.
+    async fn try_direct(&self, peer_addr: EndpointAddr, envelope_bytes: Vec<u8>) -> Result<()> {
+        tokio::time::timeout(
+            DIRECT_DELIVERY_TIMEOUT,
+            self.node_client.call_direct(peer_addr, envelope_bytes),
+        )
+        .await
+        .map_err(|_| CoreError::DirectDeliveryTimedOut)??;
+        Ok(())
+    }
+
+    /// M7: asks this device's own Server (`my_addr`) to take over
+    /// retrying delivery of `envelope` to `recipient_transport_key`, since
+    /// a direct attempt already failed.
+    async fn schedule_retry(
+        &self,
+        my_addr: EndpointAddr,
+        msg_id: [u8; 16],
+        recipient_transport_key: [u8; 32],
+        envelope: Vec<u8>,
+    ) -> Result<()> {
+        let response = self
+            .node_client
+            .call(
+                my_addr,
+                &NodeRequest::ScheduleRetry {
+                    mailbox_key: self.identity.mailbox_key,
+                    msg_id,
+                    recipient_transport_key,
+                    envelope,
+                },
+            )
+            .await?;
+        expect_ok(response)
     }
 
     async fn send(&self, contact_id: i64, plaintext: &[u8]) -> Result<()> {
@@ -658,6 +717,33 @@ impl ClientShared {
             expect_ok(response)?;
         }
         shared.store.set_last_synced_blob_id(max_id_seen)?;
+
+        // M7: pick up any of this device's own queued sends whose retry
+        // schedule exhausted since the last sync, and mark them Failed —
+        // `docs/PRD.md` Flow 3's "the message stays in the thread marked
+        // 'failed to deliver'". Reuses `my_addr` from above; a failure
+        // here shouldn't fail the sync that already succeeded, so it's
+        // propagated the same way any other own-server call in this
+        // function would be (a transient own-server outage just means
+        // trying again on the next sync).
+        let server_addr = shared.server_addr.lock().unwrap().clone().unwrap();
+        let failed_response = shared
+            .node_client
+            .call(
+                server_addr,
+                &NodeRequest::PollFailedDeliveries {
+                    mailbox_key: shared.identity.mailbox_key,
+                },
+            )
+            .await?;
+        let NodeResponse::FailedDeliveries(failed_msg_ids) = failed_response else {
+            return Err(unexpected_response(failed_response));
+        };
+        for msg_id in failed_msg_ids {
+            shared
+                .store
+                .set_message_status_by_msg_id(&msg_id, MessageStatus::Failed)?;
+        }
 
         Ok(processed)
     }

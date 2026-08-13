@@ -8,20 +8,31 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use pm_proto::{NodeRequest, NodeResponse, MAX_MESSAGE_SIZE};
 
+use crate::retry_queue::RetryQueue;
 use crate::store::{MailboxStore, WriteError};
 
 #[derive(Debug, Clone)]
 pub struct MailboxHandler {
     store: Arc<MailboxStore>,
+    retry_queue: Arc<RetryQueue>,
     /// The single tenant this node serves. Requests that claim mailbox
-    /// ownership (`Fetch`, `Ack`, `RegisterSlot`) must present this exact
-    /// key; `Write` never does, since a sender isn't the owner.
+    /// ownership (`Fetch`, `Ack`, `RegisterSlot`, `ScheduleRetry`,
+    /// `PollFailedDeliveries`) must present this exact key; `Write` never
+    /// does, since a sender isn't the owner.
     mailbox_key: [u8; 32],
 }
 
 impl MailboxHandler {
-    pub fn new(store: Arc<MailboxStore>, mailbox_key: [u8; 32]) -> Self {
-        Self { store, mailbox_key }
+    pub fn new(
+        store: Arc<MailboxStore>,
+        retry_queue: Arc<RetryQueue>,
+        mailbox_key: [u8; 32],
+    ) -> Self {
+        Self {
+            store,
+            retry_queue,
+            mailbox_key,
+        }
     }
 
     fn handle(&self, request: NodeRequest) -> NodeResponse {
@@ -78,6 +89,25 @@ impl MailboxHandler {
                 }
                 NodeResponse::Backup(self.store.get_backup())
             }
+            NodeRequest::ScheduleRetry {
+                mailbox_key,
+                msg_id,
+                recipient_transport_key,
+                envelope,
+            } => {
+                if mailbox_key != self.mailbox_key {
+                    return NodeResponse::Error("not the mailbox owner".to_string());
+                }
+                self.retry_queue
+                    .schedule(msg_id, recipient_transport_key, envelope);
+                NodeResponse::Ok
+            }
+            NodeRequest::PollFailedDeliveries { mailbox_key } => {
+                if mailbox_key != self.mailbox_key {
+                    return NodeResponse::Error("not the mailbox owner".to_string());
+                }
+                NodeResponse::FailedDeliveries(self.retry_queue.take_failed())
+            }
         }
     }
 }
@@ -115,7 +145,11 @@ mod tests {
     fn handler() -> (MailboxHandler, [u8; 32]) {
         let mailbox_key = [1u8; 32];
         (
-            MailboxHandler::new(Arc::new(MailboxStore::new()), mailbox_key),
+            MailboxHandler::new(
+                Arc::new(MailboxStore::new()),
+                Arc::new(RetryQueue::new()),
+                mailbox_key,
+            ),
             mailbox_key,
         )
     }
@@ -236,5 +270,72 @@ mod tests {
             }),
             NodeResponse::Error(_)
         ));
+    }
+
+    #[test]
+    fn schedule_retry_and_poll_failed_deliveries_require_the_correct_mailbox_key() {
+        let (handler, _real_key) = handler();
+        let wrong_key = [2u8; 32];
+
+        assert!(matches!(
+            handler.handle(NodeRequest::ScheduleRetry {
+                mailbox_key: wrong_key,
+                msg_id: [0u8; 16],
+                recipient_transport_key: [0u8; 32],
+                envelope: vec![],
+            }),
+            NodeResponse::Error(_)
+        ));
+        assert!(matches!(
+            handler.handle(NodeRequest::PollFailedDeliveries {
+                mailbox_key: wrong_key
+            }),
+            NodeResponse::Error(_)
+        ));
+    }
+
+    #[test]
+    fn schedule_retry_queues_the_entry_for_the_owner() {
+        let (handler, mailbox_key) = handler();
+
+        assert!(matches!(
+            handler.handle(NodeRequest::ScheduleRetry {
+                mailbox_key,
+                msg_id: [7u8; 16],
+                recipient_transport_key: [8u8; 32],
+                envelope: b"envelope".to_vec(),
+            }),
+            NodeResponse::Ok
+        ));
+
+        let due = handler.retry_queue.take_due();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].msg_id, [7u8; 16]);
+    }
+
+    #[test]
+    fn poll_failed_deliveries_drains_the_owners_exhausted_entries() {
+        let (handler, mailbox_key) = handler();
+        handler
+            .retry_queue
+            .schedule([7u8; 16], [8u8; 32], b"envelope".to_vec());
+        for _ in 0..crate::retry_queue::MAX_RETRY_ATTEMPTS {
+            handler.retry_queue.mark_failed([7u8; 16]);
+        }
+
+        let NodeResponse::FailedDeliveries(ids) =
+            handler.handle(NodeRequest::PollFailedDeliveries { mailbox_key })
+        else {
+            panic!("expected FailedDeliveries response");
+        };
+        assert_eq!(ids, vec![[7u8; 16]]);
+
+        // Drain-on-read: a second poll returns nothing new.
+        let NodeResponse::FailedDeliveries(ids) =
+            handler.handle(NodeRequest::PollFailedDeliveries { mailbox_key })
+        else {
+            panic!("expected FailedDeliveries response");
+        };
+        assert!(ids.is_empty());
     }
 }

@@ -17,20 +17,19 @@ async fn mutual_pairing_lands_on_the_same_secret_and_a_working_conversation() {
     let alice_identity = pm_crypto::Identity::derive(&alice_seed);
     let bob_identity = pm_crypto::Identity::derive(&bob_seed);
 
-    let (alice_router, _alice_store) = pm_node::spawn(
+    let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
     )
     .await
     .unwrap();
-    let (bob_router, _bob_store) =
-        pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-            .await
-            .unwrap();
-    alice_router.endpoint().online().await;
-    bob_router.endpoint().online().await;
-    let alice_server_addr = alice_router.endpoint().addr();
-    let bob_server_addr = bob_router.endpoint().addr();
+    let bob_node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
+        .await
+        .unwrap();
+    alice_node.endpoint().online().await;
+    bob_node.endpoint().online().await;
+    let alice_server_addr = alice_node.endpoint().addr();
+    let bob_server_addr = bob_node.endpoint().addr();
 
     let alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
         .await
@@ -82,8 +81,8 @@ async fn mutual_pairing_lands_on_the_same_secret_and_a_working_conversation() {
         bob_identity.signing_key.verifying_key().to_bytes()
     );
 
-    alice_router.shutdown().await.unwrap();
-    bob_router.shutdown().await.unwrap();
+    alice_node.shutdown().await.unwrap();
+    bob_node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -133,11 +132,11 @@ async fn own_server_addr_persists_across_close_and_reopen() {
     let dir = tempdir().unwrap();
     let (seed, _) = Seed::generate();
     let identity = pm_crypto::Identity::derive(&seed);
-    let (router, _store) = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+    let node = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
         .await
         .unwrap();
-    router.endpoint().online().await;
-    let server_addr = router.endpoint().addr();
+    node.endpoint().online().await;
+    let server_addr = node.endpoint().addr();
 
     let store_path = dir.path().join("store.sqlite");
 
@@ -155,5 +154,5 @@ async fn own_server_addr_persists_across_close_and_reopen() {
         "own Server address must survive a close/reopen without being re-supplied"
     );
 
-    router.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }

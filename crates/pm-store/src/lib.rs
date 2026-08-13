@@ -241,6 +241,26 @@ impl Store {
         Ok(())
     }
 
+    /// Same as `set_message_status`, but looked up by `msg_id` alone — for
+    /// M7's `PollFailedDeliveries`, which reports back which of the
+    /// owner's own queued sends gave up without knowing (or needing to
+    /// know) which contact it was to; `pm-node` has no notion of contacts
+    /// at all. `msg_id` is 128 bits of randomness (see `deliver`'s
+    /// generation in `pm-core`), so matching on it alone is safe in
+    /// practice even though the schema's own uniqueness constraint is
+    /// scoped per-contact.
+    pub fn set_message_status_by_msg_id(
+        &self,
+        msg_id: &[u8; 16],
+        status: MessageStatus,
+    ) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE messages SET status = ?1 WHERE msg_id = ?2",
+            params![status.as_str(), msg_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
     /// All messages with a contact, oldest first by Lamport order.
     pub fn messages_for_contact(&self, contact_id: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().unwrap();
@@ -744,6 +764,40 @@ mod tests {
             .set_message_status(contact_id, &[99u8; 16], MessageStatus::Delivered)
             .unwrap();
         assert_eq!(store.messages_for_contact(contact_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn set_message_status_by_msg_id_updates_without_knowing_the_contact() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
+        let msg_id = [3u8; 16];
+        store
+            .insert_message(
+                contact_id,
+                NewMessage {
+                    msg_id,
+                    direction: Direction::Outgoing,
+                    lamport: 1,
+                    sent_at: 1_754_000_000_000,
+                    plaintext: b"hi",
+                    status: Some(MessageStatus::Sent),
+                },
+            )
+            .unwrap();
+
+        store
+            .set_message_status_by_msg_id(&msg_id, MessageStatus::Failed)
+            .unwrap();
+
+        assert_eq!(
+            store.messages_for_contact(contact_id).unwrap()[0].status,
+            Some(MessageStatus::Failed)
+        );
+
+        // An unknown msg_id is a harmless no-op, matching set_message_status.
+        store
+            .set_message_status_by_msg_id(&[99u8; 16], MessageStatus::Failed)
+            .unwrap();
     }
 
     #[test]

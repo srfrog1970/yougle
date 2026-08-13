@@ -28,12 +28,11 @@ async fn two_clients_exchange_a_message_through_the_node() {
     let bob_identity = Identity::derive(&bob_seed);
 
     // --- Start Bob's node ---
-    let (router, store) =
-        pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-            .await
-            .expect("node starts");
-    router.endpoint().online().await;
-    let node_addr = router.endpoint().addr();
+    let node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
+        .await
+        .expect("node starts");
+    node.endpoint().online().await;
+    let node_addr = node.endpoint().addr();
 
     // --- Two independent client endpoints — separate network identities,
     // standing in for "separate processes" ---
@@ -100,7 +99,7 @@ async fn two_clients_exchange_a_message_through_the_node() {
 
     // --- The node's own storage proves it saw only an opaque blob: no
     // plaintext, no sender identity, nothing but auth-gated bytes. ---
-    let stored = store.fetch_all();
+    let stored = node.store.fetch_all();
     assert_eq!(stored.len(), 1);
     assert!(
         !stored[0]
@@ -155,9 +154,9 @@ async fn two_clients_exchange_a_message_through_the_node() {
         .await
         .expect("ack call succeeds");
     assert!(matches!(response, NodeResponse::Ok));
-    assert!(store.fetch_all()[0].delivered);
+    assert!(node.store.fetch_all()[0].delivered);
     assert_eq!(
-        store.fetch_all().len(),
+        node.store.fetch_all().len(),
         1,
         "acked messages are retained, not deleted"
     );
@@ -178,5 +177,5 @@ async fn two_clients_exchange_a_message_through_the_node() {
 
     alice_client.close().await;
     bob_client.close().await;
-    router.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
 }

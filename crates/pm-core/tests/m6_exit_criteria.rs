@@ -85,20 +85,19 @@ async fn server_mailbox_status_transitions_from_sent_to_delivered_via_receipt() 
     let alice_identity = pm_crypto::Identity::derive(&alice_seed);
     let bob_identity = pm_crypto::Identity::derive(&bob_seed);
 
-    let (alice_router, _alice_store) = pm_node::spawn(
+    let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
     )
     .await
     .unwrap();
-    let (bob_router, _bob_store) =
-        pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-            .await
-            .unwrap();
-    alice_router.endpoint().online().await;
-    bob_router.endpoint().online().await;
-    let alice_server_addr = alice_router.endpoint().addr();
-    let bob_server_addr = bob_router.endpoint().addr();
+    let bob_node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
+        .await
+        .unwrap();
+    alice_node.endpoint().online().await;
+    bob_node.endpoint().online().await;
+    let alice_server_addr = alice_node.endpoint().addr();
+    let bob_server_addr = bob_node.endpoint().addr();
 
     let alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
         .await
@@ -157,8 +156,8 @@ async fn server_mailbox_status_transitions_from_sent_to_delivered_via_receipt() 
         "message status never transitioned from Sent to Delivered"
     );
 
-    alice_router.shutdown().await.unwrap();
-    bob_router.shutdown().await.unwrap();
+    alice_node.shutdown().await.unwrap();
+    bob_node.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -220,19 +219,19 @@ async fn pm_node_address_is_stable_across_restarts() {
     let (seed, _) = Seed::generate();
     let identity = pm_crypto::Identity::derive(&seed);
 
-    let (router1, _store1) = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+    let node1 = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
         .await
         .unwrap();
-    router1.endpoint().online().await;
-    let id1 = router1.endpoint().addr().id;
-    router1.shutdown().await.unwrap();
+    node1.endpoint().online().await;
+    let id1 = node1.endpoint().addr().id;
+    node1.shutdown().await.unwrap();
 
-    let (router2, _store2) = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+    let node2 = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
         .await
         .unwrap();
-    router2.endpoint().online().await;
-    let id2 = router2.endpoint().addr().id;
-    router2.shutdown().await.unwrap();
+    node2.endpoint().online().await;
+    let id2 = node2.endpoint().addr().id;
+    node2.shutdown().await.unwrap();
 
     assert_eq!(
         id1, id2,

@@ -35,6 +35,7 @@ pub fn decode_endpoint_addr(s: &str) -> Result<EndpointAddr> {
 /// a whole app session; a fresh QUIC connection is opened per call (see
 /// `docs/PRD.md`'s Open Items — connection reuse/multiplexing is a later
 /// efficiency concern, not a v0 requirement).
+#[derive(Clone)]
 pub struct NodeClient {
     endpoint: Endpoint,
 }
@@ -57,6 +58,15 @@ impl NodeClient {
             .await
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
         Ok(Self { endpoint })
+    }
+
+    /// Wraps an *existing* endpoint instead of binding a new one — for a
+    /// caller (M7's `pm-node` retry-delivery sweep) that already has an
+    /// endpoint of its own (e.g. one also serving an accept-side `Router`)
+    /// and wants to dial out from that same identity, rather than standing
+    /// up a second, differently-identified one for outbound calls alone.
+    pub fn from_endpoint(endpoint: Endpoint) -> Self {
+        Self { endpoint }
     }
 
     /// This endpoint's own address, shareable with a peer so they can dial

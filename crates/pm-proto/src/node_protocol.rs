@@ -68,6 +68,31 @@ pub enum NodeRequest {
     /// resolved here), so the requester already needs to know the mailbox
     /// key to ask at all.
     GetBackup { mailbox_key: [u8; 32] },
+    /// M7 (`docs/PRD.md` Flow 3's third case): asks *this* node's own owner
+    /// to take over delivering `envelope` to `recipient_transport_key` on a
+    /// retry schedule, since the sender's own direct attempt already
+    /// failed. `envelope` is already-encrypted, already-padded bytes
+    /// (`Envelope::to_padded_bytes()`) — completely opaque to this node,
+    /// same as `Write`'s `blob`. Authenticated by mailbox ownership (unlike
+    /// `Write`): only the owner should be able to spend their own node's
+    /// resources dialing out on their behalf, or any node would become an
+    /// open relay for third parties. `msg_id` lets a later
+    /// `PollFailedDeliveries` report back which message gave up.
+    ScheduleRetry {
+        mailbox_key: [u8; 32],
+        msg_id: [u8; 16],
+        recipient_transport_key: [u8; 32],
+        envelope: Vec<u8>,
+    },
+    /// Drains (returns and clears) the msg_ids of this owner's own queued
+    /// sends whose retry schedule exhausted since the last poll — how the
+    /// sender's client learns to mark a message "failed to deliver" per
+    /// `docs/PRD.md` Flow 3. No separate ack step, unlike `Fetch`/`Ack`:
+    /// if the client crashes before applying the result, the affected
+    /// message just stays `Sent` rather than flipping to `Failed`, a
+    /// benign degradation of an already-approximate sender-side signal,
+    /// not loss of the message itself. Authenticated by mailbox ownership.
+    PollFailedDeliveries { mailbox_key: [u8; 32] },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,5 +108,7 @@ pub enum NodeResponse {
     Blobs(Vec<StoredBlob>),
     /// `None` if no backup has ever been stored for this mailbox.
     Backup(Option<Vec<u8>>),
+    /// msg_ids drained by `PollFailedDeliveries`.
+    FailedDeliveries(Vec<[u8; 16]>),
     Error(String),
 }
