@@ -58,6 +58,20 @@ fn format_addr(addr: &iroh::EndpointAddr) -> Result<String, FfiError> {
     pm_transport::encode_endpoint_addr(addr).map_err(Into::into)
 }
 
+/// uniffi's async bridging polls exported futures from whatever thread the
+/// foreign (Kotlin/Swift/JS) side drives them from — not necessarily one
+/// with a Tokio runtime entered. `iroh` (and anything else in `pm-core`
+/// that spawns tasks or uses Tokio's reactor) needs one, or every call
+/// fails at runtime with "there is no reactor running, must be called from
+/// the context of a Tokio 1.x runtime" — a failure invisible to `cargo
+/// build`/`cargo test`, since `#[tokio::test]` always provides a runtime.
+/// `async_compat::Compat` (re-exported by uniffi's own `tokio` feature)
+/// fixes this by entering a lazily-created background Tokio runtime on
+/// every poll, regardless of what's actually driving the outer future.
+async fn compat<F: std::future::Future>(fut: F) -> F::Output {
+    uniffi::deps::async_compat::Compat::new(fut).await
+}
+
 #[derive(uniffi::Record)]
 pub struct FfiMessage {
     pub msg_id: Vec<u8>,
@@ -157,11 +171,14 @@ impl FfiClient {
     /// `own_server_addr`.
     #[uniffi::constructor]
     pub async fn open(seed_phrase: String, store_path: String) -> Result<Self, FfiError> {
-        let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-        let client = pm_core::Client::open(&seed, &PathBuf::from(store_path)).await?;
-        Ok(Self {
-            inner: Mutex::new(client),
+        compat(async move {
+            let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
+            let client = pm_core::Client::open(&seed, &PathBuf::from(store_path)).await?;
+            Ok(Self {
+                inner: Mutex::new(client),
+            })
         })
+        .await
     }
 
     /// Restores identity, contacts, and message history from a backup
@@ -173,12 +190,15 @@ impl FfiClient {
         store_path: String,
         server_addr: String,
     ) -> Result<Self, FfiError> {
-        let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-        let addr = parse_addr(&server_addr)?;
-        let client = pm_core::Client::restore(&seed, &PathBuf::from(store_path), addr).await?;
-        Ok(Self {
-            inner: Mutex::new(client),
+        compat(async move {
+            let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
+            let addr = parse_addr(&server_addr)?;
+            let client = pm_core::Client::restore(&seed, &PathBuf::from(store_path), addr).await?;
+            Ok(Self {
+                inner: Mutex::new(client),
+            })
         })
+        .await
     }
 
     /// Restores identity, contacts, and message history from a manually
@@ -190,65 +210,86 @@ impl FfiClient {
         store_path: String,
         backup_bytes: Vec<u8>,
     ) -> Result<Self, FfiError> {
-        let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-        let client =
-            pm_core::Client::import_backup(&seed, &PathBuf::from(store_path), &backup_bytes)
-                .await?;
-        Ok(Self {
-            inner: Mutex::new(client),
+        compat(async move {
+            let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
+            let client =
+                pm_core::Client::import_backup(&seed, &PathBuf::from(store_path), &backup_bytes)
+                    .await?;
+            Ok(Self {
+                inner: Mutex::new(client),
+            })
         })
+        .await
     }
 
     pub async fn identity_key(&self) -> Vec<u8> {
-        self.inner.lock().await.identity_key().to_vec()
+        compat(async { self.inner.lock().await.identity_key().to_vec() }).await
     }
 
     pub async fn curve25519_key(&self) -> Vec<u8> {
-        self.inner.lock().await.curve25519_key().to_vec()
+        compat(async { self.inner.lock().await.curve25519_key().to_vec() }).await
     }
 
     /// Generates a one-time key for a pairing partner (stand-in for what a
     /// real QR payload would carry — see `pm-core`'s docs).
     pub async fn generate_one_time_key(&self) -> Result<Vec<u8>, FfiError> {
-        let mut inner = self.inner.lock().await;
-        Ok(inner.generate_one_time_key()?.to_vec())
+        compat(async {
+            let mut inner = self.inner.lock().await;
+            Ok(inner.generate_one_time_key()?.to_vec())
+        })
+        .await
     }
 
     pub async fn list_contacts(&self) -> Result<Vec<FfiContact>, FfiError> {
-        let inner = self.inner.lock().await;
-        Ok(inner.list_contacts()?.into_iter().map(Into::into).collect())
+        compat(async {
+            let inner = self.inner.lock().await;
+            Ok(inner.list_contacts()?.into_iter().map(Into::into).collect())
+        })
+        .await
     }
 
     /// This device's own Server mailbox address, if it has configured one.
     pub async fn own_server_addr(&self) -> Result<Option<String>, FfiError> {
-        let inner = self.inner.lock().await;
-        inner
-            .own_server_addr()
-            .map(|addr| format_addr(&addr))
-            .transpose()
+        compat(async {
+            let inner = self.inner.lock().await;
+            inner
+                .own_server_addr()
+                .map(|addr| format_addr(&addr))
+                .transpose()
+        })
+        .await
     }
 
     /// Configures this device's own Server mailbox from a pasted/scanned
     /// address string.
     pub async fn set_own_server_addr(&self, addr: String) -> Result<(), FfiError> {
-        let addr = parse_addr(&addr)?;
-        let mut inner = self.inner.lock().await;
-        inner.set_own_server_addr(addr)?;
-        Ok(())
+        compat(async move {
+            let addr = parse_addr(&addr)?;
+            let mut inner = self.inner.lock().await;
+            inner.set_own_server_addr(addr)?;
+            Ok(())
+        })
+        .await
     }
 
     pub async fn clear_own_server_addr(&self) -> Result<(), FfiError> {
-        let mut inner = self.inner.lock().await;
-        inner.clear_own_server_addr()?;
-        Ok(())
+        compat(async {
+            let mut inner = self.inner.lock().await;
+            inner.clear_own_server_addr()?;
+            Ok(())
+        })
+        .await
     }
 
     /// Produces this device's shareable pairing data. Hold onto the
     /// returned `nonce` — it's needed again, unchanged, when this same
     /// pairing attempt is completed via `add_contact_from_payload`.
     pub async fn pairing_payload(&self) -> Result<FfiPairingPayload, FfiError> {
-        let mut inner = self.inner.lock().await;
-        Ok(inner.pairing_payload()?.into())
+        compat(async {
+            let mut inner = self.inner.lock().await;
+            Ok(inner.pairing_payload()?.into())
+        })
+        .await
     }
 
     /// Completes a pairing exchange: `their` is the partner's
@@ -260,13 +301,16 @@ impl FfiClient {
         my_nonce: Vec<u8>,
         display_name: Option<String>,
     ) -> Result<i64, FfiError> {
-        let their: pm_core::PairingPayload = their.try_into()?;
-        let my_nonce = to_32(my_nonce, "my_nonce")?;
+        compat(async move {
+            let their: pm_core::PairingPayload = their.try_into()?;
+            let my_nonce = to_32(my_nonce, "my_nonce")?;
 
-        let mut inner = self.inner.lock().await;
-        Ok(inner
-            .add_contact_from_payload(their, my_nonce, display_name.as_deref())
-            .await?)
+            let mut inner = self.inner.lock().await;
+            Ok(inner
+                .add_contact_from_payload(their, my_nonce, display_name.as_deref())
+                .await?)
+        })
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -279,60 +323,78 @@ impl FfiClient {
         their_server_addr: Option<String>,
         pair_secret: Vec<u8>,
     ) -> Result<i64, FfiError> {
-        let their_identity_key = to_32(their_identity_key, "their_identity_key")?;
-        let their_curve25519_key = to_32(their_curve25519_key, "their_curve25519_key")?;
-        let their_one_time_key = to_32(their_one_time_key, "their_one_time_key")?;
-        let pair_secret = to_32(pair_secret, "pair_secret")?;
-        let their_server_addr = their_server_addr.map(|s| parse_addr(&s)).transpose()?;
+        compat(async move {
+            let their_identity_key = to_32(their_identity_key, "their_identity_key")?;
+            let their_curve25519_key = to_32(their_curve25519_key, "their_curve25519_key")?;
+            let their_one_time_key = to_32(their_one_time_key, "their_one_time_key")?;
+            let pair_secret = to_32(pair_secret, "pair_secret")?;
+            let their_server_addr = their_server_addr.map(|s| parse_addr(&s)).transpose()?;
 
-        let mut inner = self.inner.lock().await;
-        let id = inner
-            .add_contact(
-                their_identity_key,
-                their_curve25519_key,
-                their_one_time_key,
-                display_name.as_deref(),
-                their_server_addr,
-                pair_secret,
-            )
-            .await?;
-        Ok(id)
+            let mut inner = self.inner.lock().await;
+            let id = inner
+                .add_contact(
+                    their_identity_key,
+                    their_curve25519_key,
+                    their_one_time_key,
+                    display_name.as_deref(),
+                    their_server_addr,
+                    pair_secret,
+                )
+                .await?;
+            Ok(id)
+        })
+        .await
     }
 
     pub async fn send(&self, contact_id: i64, plaintext: Vec<u8>) -> Result<(), FfiError> {
-        let mut inner = self.inner.lock().await;
-        inner.send(contact_id, &plaintext).await?;
-        Ok(())
+        compat(async move {
+            let mut inner = self.inner.lock().await;
+            inner.send(contact_id, &plaintext).await?;
+            Ok(())
+        })
+        .await
     }
 
     /// Fetches and processes new messages from this client's own Server.
     /// Returns how many were processed.
     pub async fn sync(&self) -> Result<u32, FfiError> {
-        let mut inner = self.inner.lock().await;
-        Ok(inner.sync().await? as u32)
+        compat(async {
+            let mut inner = self.inner.lock().await;
+            Ok(inner.sync().await? as u32)
+        })
+        .await
     }
 
     pub async fn messages_for_contact(&self, contact_id: i64) -> Result<Vec<FfiMessage>, FfiError> {
-        let inner = self.inner.lock().await;
-        Ok(inner
-            .messages_for_contact(contact_id)?
-            .into_iter()
-            .map(Into::into)
-            .collect())
+        compat(async move {
+            let inner = self.inner.lock().await;
+            Ok(inner
+                .messages_for_contact(contact_id)?
+                .into_iter()
+                .map(Into::into)
+                .collect())
+        })
+        .await
     }
 
     pub async fn push_backup(&self) -> Result<(), FfiError> {
-        let inner = self.inner.lock().await;
-        inner.push_backup().await?;
-        Ok(())
+        compat(async {
+            let inner = self.inner.lock().await;
+            inner.push_backup().await?;
+            Ok(())
+        })
+        .await
     }
 
     /// Assembles and encrypts the same backup bundle as `push_backup`, but
     /// returns the ciphertext directly instead of pushing it to a Server —
     /// works with no Server mailbox configured at all.
     pub async fn export_backup(&self) -> Result<Vec<u8>, FfiError> {
-        let inner = self.inner.lock().await;
-        Ok(inner.export_backup()?)
+        compat(async {
+            let inner = self.inner.lock().await;
+            Ok(inner.export_backup()?)
+        })
+        .await
     }
 }
 

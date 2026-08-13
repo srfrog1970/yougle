@@ -29,8 +29,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (router, _store) = spawn(mailbox_key).await?;
     router.endpoint().online().await;
-    println!("pm-node listening. Endpoint address:");
-    println!("{:?}", router.endpoint().addr());
+    let addr = router.endpoint().addr();
+    println!("pm-node listening. Endpoint address (paste this into the app's Server mailbox setup screen):");
+    println!("{}", pm_transport::encode_endpoint_addr(&addr)?);
 
     tokio::signal::ctrl_c().await?;
     println!("shutting down");

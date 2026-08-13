@@ -14,7 +14,14 @@ pm-core = { path = "../pm-core" }
 pm-crypto = { path = "../pm-crypto" }
 pm-store = { path = "../pm-store" }
 pm-transport = { path = "../pm-transport" }
-uniffi = { version = "0.29", features = ["tokio"] }
+# Pinned to exactly match uniffi-bindgen-react-native's own uniffi
+# dependency (see app/node_modules/uniffi-bindgen-react-native/Cargo.toml)
+# — a mismatch here is a silent runtime failure, not a build error: the JS
+# and Rust sides embed a scaffolding-version number each generated from
+# their own uniffi version, checked only when the app actually runs
+# ("Incompatible versions of uniffi were used to build the JS (N) from the
+# Rust (M)").
+uniffi = { version = "=0.31.0", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 bincode = "1"
 thiserror = { workspace = true }

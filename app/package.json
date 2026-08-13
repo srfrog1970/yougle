@@ -11,6 +11,9 @@
     "ubrn:web": "ubrn build web",
     "ubrn:clean": "rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/"
   },
+  "react-native-builder-bob": {
+    "source": "src"
+  },
   "codegenConfig": {
     "name": "YougleNativeSpec",
     "type": "modules",

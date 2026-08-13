@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 pm-proto = { path = "../pm-proto" }
+pm-transport = { path = "../pm-transport" }
 thiserror = { workspace = true }
 iroh = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
@@ -21,7 +22,6 @@ hex = "0.4"
 tracing-subscriber = "0.3"
 
 [dev-dependencies]
-pm-transport = { path = "../pm-transport" }
 pm-crypto = { path = "../pm-crypto" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ed25519-dalek = "2"
