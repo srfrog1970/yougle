@@ -8,7 +8,11 @@ description = "SQLCipher-encrypted local storage: schema, migrations, and Lampor
 
 [dependencies]
 thiserror = { workspace = true }
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
+# bundled-sqlcipher-vendored-openssl (not plain bundled-sqlcipher): when
+# cross-compiling (e.g. to Android), there's no pre-built OpenSSL for the
+# target lying around. This variant builds OpenSSL from source for whatever
+# target is being compiled, at the cost of a slower build.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 hex = "0.4"
 serde = { workspace = true }
 

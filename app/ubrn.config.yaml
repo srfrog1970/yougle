@@ -1,0 +1,4 @@
+---
+rust:
+  directory: ..
+  manifestPath: crates/pm-ffi/Cargo.toml

@@ -10,6 +10,7 @@ mod lamport;
 mod migrations;
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -72,8 +73,17 @@ pub struct StoredMessage {
 
 /// A single user's encrypted local database: contacts, session state, and
 /// message history.
+///
+/// The connection is `Mutex`-wrapped so `Store` (and everything built on
+/// it, up through `pm-core`'s `Client`) is `Sync` — `rusqlite::Connection`
+/// itself isn't (it uses `RefCell` internally for statement caching), which
+/// otherwise blocks any async method taking `&self` from producing a `Send`
+/// future. That doesn't matter when a future is only ever directly
+/// `.await`ed (as in this crate's own tests), but it does the moment
+/// something spawns it onto a multi-threaded executor — which is exactly
+/// what `pm-ffi`'s uniffi async bridging does.
 pub struct Store {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl Store {
@@ -102,7 +112,9 @@ impl Store {
         // API — see https://www.zetetic.net/sqlcipher/sqlcipher-api/#key.
         conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex::encode(key)))?;
         migrations::run(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Inserts a contact, or updates its keys/name if the identity key is
@@ -113,7 +125,8 @@ impl Store {
         curve25519_key: &[u8; 32],
         display_name: Option<&str>,
     ) -> Result<i64> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT INTO contacts (identity_key, curve25519_key, display_name, created_at)
              VALUES (?1, ?2, ?3, unixepoch())
              ON CONFLICT (identity_key) DO UPDATE SET
@@ -125,18 +138,17 @@ impl Store {
                 display_name
             ],
         )?;
-        self.conn
-            .query_row(
-                "SELECT id FROM contacts WHERE identity_key = ?1",
-                [identity_key.as_slice()],
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
+        conn.query_row(
+            "SELECT id FROM contacts WHERE identity_key = ?1",
+            [identity_key.as_slice()],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
     }
 
     /// Saves (or replaces) the pickled Olm session state for a contact.
     pub fn save_session_pickle(&self, contact_id: i64, pickle: &[u8]) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "INSERT INTO sessions (contact_id, pickle, updated_at)
              VALUES (?1, ?2, unixepoch())
              ON CONFLICT (contact_id) DO UPDATE SET
@@ -149,6 +161,8 @@ impl Store {
 
     pub fn load_session_pickle(&self, contact_id: i64) -> Result<Option<Vec<u8>>> {
         self.conn
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT pickle FROM sessions WHERE contact_id = ?1",
                 [contact_id],
@@ -159,7 +173,7 @@ impl Store {
     }
 
     pub fn insert_message(&self, contact_id: i64, msg: NewMessage) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "INSERT INTO messages (contact_id, msg_id, direction, lamport, sent_at, plaintext, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())",
             params![
@@ -176,7 +190,8 @@ impl Store {
 
     /// All messages with a contact, oldest first by Lamport order.
     pub fn messages_for_contact(&self, contact_id: i64) -> Result<Vec<StoredMessage>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT msg_id, direction, lamport, sent_at, plaintext
              FROM messages WHERE contact_id = ?1 ORDER BY lamport ASC",
         )?;
@@ -209,18 +224,18 @@ impl Store {
     /// Advances this device's Lamport clock for a local event (e.g., sending
     /// a message) and returns the new value.
     pub fn tick_lamport(&self) -> Result<u64> {
-        lamport::tick(&self.conn)
+        lamport::tick(&self.conn.lock().unwrap())
     }
 
     /// Merges an observed remote Lamport value (e.g., from a received
     /// message) into this device's clock and returns the new local value.
     pub fn observe_lamport(&self, remote: u64) -> Result<u64> {
-        lamport::observe(&self.conn, remote)
+        lamport::observe(&self.conn.lock().unwrap(), remote)
     }
 
     /// Saves (or replaces) this device's own vodozemac Account pickle.
     pub fn save_account_pickle(&self, pickle: &[u8]) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "INSERT INTO account (id, pickle, updated_at) VALUES (0, ?1, unixepoch())
              ON CONFLICT (id) DO UPDATE SET
                 pickle = excluded.pickle,
@@ -232,6 +247,8 @@ impl Store {
 
     pub fn load_account_pickle(&self) -> Result<Option<Vec<u8>>> {
         self.conn
+            .lock()
+            .unwrap()
             .query_row("SELECT pickle FROM account WHERE id = 0", [], |row| {
                 row.get(0)
             })
@@ -247,7 +264,7 @@ impl Store {
         contact_id: i64,
         server_addr: Option<&[u8]>,
     ) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE contacts SET server_addr = ?1 WHERE id = ?2",
             params![server_addr, contact_id],
         )?;
@@ -256,6 +273,8 @@ impl Store {
 
     pub fn get_contact_server_addr(&self, contact_id: i64) -> Result<Option<Vec<u8>>> {
         self.conn
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT server_addr FROM contacts WHERE id = ?1",
                 [contact_id],
@@ -269,7 +288,7 @@ impl Store {
     /// Records the shared pairing secret for a contact (stand-in for real
     /// pairing output — see `pm-core`).
     pub fn set_contact_pair_secret(&self, contact_id: i64, pair_secret: &[u8; 32]) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE contacts SET pair_secret = ?1 WHERE id = ?2",
             params![pair_secret.as_slice(), contact_id],
         )?;
@@ -279,25 +298,25 @@ impl Store {
     /// Atomically advances and returns this device's write counter for a
     /// contact — the `n` used to derive the next write-auth value.
     pub fn increment_and_get_next_write_n(&self, contact_id: i64) -> Result<u64> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "UPDATE contacts SET next_write_n = next_write_n + 1 WHERE id = ?1",
             [contact_id],
         )?;
-        self.conn
-            .query_row(
-                "SELECT next_write_n FROM contacts WHERE id = ?1",
-                [contact_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|n| (n - 1) as u64) // return the value *used* for this write, not the post-increment one
-            .map_err(Into::into)
+        conn.query_row(
+            "SELECT next_write_n FROM contacts WHERE id = ?1",
+            [contact_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| (n - 1) as u64) // return the value *used* for this write, not the post-increment one
+        .map_err(Into::into)
     }
 
     /// Records the one-time key received from this contact at pairing time,
     /// held until it's consumed to lazily establish the first outbound
     /// session (see migration 0004).
     pub fn set_contact_pending_otk(&self, contact_id: i64, otk: Option<&[u8; 32]>) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "UPDATE contacts SET pending_otk = ?1 WHERE id = ?2",
             params![otk.map(|k| k.as_slice()), contact_id],
         )?;
@@ -305,7 +324,8 @@ impl Store {
     }
 
     pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk
              FROM contacts ORDER BY id ASC",
         )?;
@@ -371,6 +391,8 @@ impl Store {
     /// `sync()`.
     pub fn get_last_synced_blob_id(&self) -> Result<u64> {
         self.conn
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT last_synced_blob_id FROM account WHERE id = 0",
                 [],
@@ -384,7 +406,7 @@ impl Store {
     pub fn set_last_synced_blob_id(&self, value: u64) -> Result<()> {
         // The account row might not exist yet if no account pickle has been
         // saved; ensure it does, then set the watermark.
-        self.conn.execute(
+        self.conn.lock().unwrap().execute(
             "INSERT INTO account (id, pickle, updated_at, last_synced_blob_id)
              VALUES (0, x'', unixepoch(), ?1)
              ON CONFLICT (id) DO UPDATE SET last_synced_blob_id = excluded.last_synced_blob_id",

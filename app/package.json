@@ -1,0 +1,51 @@
+{
+  "name": "yougle-native",
+  "version": "0.0.0",
+  "description": "Rust core (pm-core) bridged to React Native via uniffi-bindgen-react-native",
+  "main": "src/index",
+  "scripts": {
+    "ubrn:checkout": "ubrn checkout",
+    "ubrn:ios": "ubrn build ios --and-generate && (cd example/ios && pod install)",
+    "ubrn:android": "ubrn build android --and-generate",
+    "ubrn:web": "ubrn build web",
+    "ubrn:clean": "rm -rfv cpp/ android/CMakeLists.txt android/src/main/java android/*.cpp ios/ src/Native* src/index.*ts* src/generated/"
+  },
+  "codegenConfig": {
+    "name": "YougleNativeSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.youglenative"
+    }
+  },
+  "author": " <> ()",
+  "license": "UNLICENSED",
+  "homepage": "#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/srfrog1970/yougle.git",
+    "directory": "app"
+  },
+  "devDependencies": {
+    "@react-native/babel-preset": "0.85.0",
+    "@types/react": "^19.2.0",
+    "react": "19.2.3",
+    "react-native": "0.85.0"
+  },
+  "create-react-native-library": {
+    "type": "turbo-module",
+    "languages": "kotlin-objc",
+    "tools": [
+      "eslint",
+      "jest",
+      "lefthook",
+      "release-it",
+      "vite"
+    ],
+    "version": "0.63.0"
+  },
+  "dependencies": {
+    "@ubjs/core": "^0.31.0-3",
+    "uniffi-bindgen-react-native": "^0.31.0-3"
+  }
+}
