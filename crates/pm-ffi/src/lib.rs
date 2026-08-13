@@ -1,11 +1,12 @@
 //! `pm-ffi`: uniffi interface definitions exposing `pm-core`'s `Client` to
 //! the React Native app via `uniffi-bindgen-react-native` (Turbo Modules).
 //!
-//! `pm_core::Client`'s methods take `&mut self`, but uniffi objects are
-//! always accessed through `&self` (foreign callers hold a shared
-//! reference) — so this wraps `Client` in a `tokio::sync::Mutex` and every
-//! exported method locks it, even the read-only ones, for one consistent
-//! access pattern.
+//! `pm_core::Client` is its own internally-synchronized, cheaply-`Clone`
+//! handle (see its module doc comment) — its background Local-delivery
+//! accept loop needs that regardless of FFI, so there's no need for this
+//! layer to add its *own* outer lock on top the way it did through M5;
+//! every method here just calls straight into `Client`'s own `&self`
+//! methods.
 //!
 //! Server mailbox addresses cross this boundary as plain strings (see
 //! `pm_transport::encode_endpoint_addr`/`decode_endpoint_addr`) rather than
@@ -15,8 +16,6 @@
 //! itself; the RN layer never handles raw address bytes.
 
 use std::path::PathBuf;
-
-use tokio::sync::Mutex;
 
 uniffi::setup_scaffolding!();
 
@@ -72,6 +71,25 @@ async fn compat<F: std::future::Future>(fut: F) -> F::Output {
     uniffi::deps::async_compat::Compat::new(fut).await
 }
 
+/// Delivery status for an outgoing message — see `pm_store::MessageStatus`.
+/// `None` for incoming messages, where status isn't a concept that applies.
+#[derive(uniffi::Enum)]
+pub enum FfiMessageStatus {
+    Sent,
+    Delivered,
+    Failed,
+}
+
+impl From<pm_store::MessageStatus> for FfiMessageStatus {
+    fn from(s: pm_store::MessageStatus) -> Self {
+        match s {
+            pm_store::MessageStatus::Sent => FfiMessageStatus::Sent,
+            pm_store::MessageStatus::Delivered => FfiMessageStatus::Delivered,
+            pm_store::MessageStatus::Failed => FfiMessageStatus::Failed,
+        }
+    }
+}
+
 #[derive(uniffi::Record)]
 pub struct FfiMessage {
     pub msg_id: Vec<u8>,
@@ -79,6 +97,7 @@ pub struct FfiMessage {
     pub lamport: u64,
     pub sent_at: u64,
     pub plaintext: Vec<u8>,
+    pub status: Option<FfiMessageStatus>,
 }
 
 impl From<pm_store::StoredMessage> for FfiMessage {
@@ -89,6 +108,7 @@ impl From<pm_store::StoredMessage> for FfiMessage {
             lamport: m.lamport,
             sent_at: m.sent_at,
             plaintext: m.plaintext,
+            status: m.status.map(Into::into),
         }
     }
 }
@@ -99,9 +119,10 @@ pub struct FfiContact {
     pub identity_key: Vec<u8>,
     pub curve25519_key: Vec<u8>,
     pub display_name: Option<String>,
-    /// Whether this contact has a Server mailbox on file — until M6 (see
-    /// `pm-core`'s module-level scope note), sending only works when this
-    /// is true.
+    /// Whether this contact has a Server mailbox on file. Sending works
+    /// either way as of M6 (a contact with no Server mailbox gets a direct
+    /// Local delivery attempt instead) — this is informational (e.g. for
+    /// showing "Local only" in a contact list), not a capability gate.
     pub has_server: bool,
 }
 
@@ -124,6 +145,7 @@ impl From<pm_store::ContactRecord> for FfiContact {
 pub struct FfiPairingPayload {
     pub identity_key: Vec<u8>,
     pub curve25519_key: Vec<u8>,
+    pub transport_key: Vec<u8>,
     pub one_time_key: Vec<u8>,
     pub nonce: Vec<u8>,
     pub server_addr: Option<Vec<u8>>,
@@ -134,6 +156,7 @@ impl From<pm_core::PairingPayload> for FfiPairingPayload {
         Self {
             identity_key: p.identity_key.to_vec(),
             curve25519_key: p.curve25519_key.to_vec(),
+            transport_key: p.transport_key.to_vec(),
             one_time_key: p.one_time_key.to_vec(),
             nonce: p.nonce.to_vec(),
             server_addr: p.server_addr,
@@ -148,6 +171,7 @@ impl TryFrom<FfiPairingPayload> for pm_core::PairingPayload {
         Ok(Self {
             identity_key: to_32(p.identity_key, "identity_key")?,
             curve25519_key: to_32(p.curve25519_key, "curve25519_key")?,
+            transport_key: to_32(p.transport_key, "transport_key")?,
             one_time_key: to_32(p.one_time_key, "one_time_key")?,
             nonce: to_32(p.nonce, "nonce")?,
             server_addr: p.server_addr,
@@ -159,7 +183,7 @@ impl TryFrom<FfiPairingPayload> for pm_core::PairingPayload {
 /// per app session.
 #[derive(uniffi::Object)]
 pub struct FfiClient {
-    inner: Mutex<pm_core::Client>,
+    inner: pm_core::Client,
 }
 
 #[uniffi::export]
@@ -173,10 +197,8 @@ impl FfiClient {
     pub async fn open(seed_phrase: String, store_path: String) -> Result<Self, FfiError> {
         compat(async move {
             let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-            let client = pm_core::Client::open(&seed, &PathBuf::from(store_path)).await?;
-            Ok(Self {
-                inner: Mutex::new(client),
-            })
+            let inner = pm_core::Client::open(&seed, &PathBuf::from(store_path)).await?;
+            Ok(Self { inner })
         })
         .await
     }
@@ -193,10 +215,8 @@ impl FfiClient {
         compat(async move {
             let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
             let addr = parse_addr(&server_addr)?;
-            let client = pm_core::Client::restore(&seed, &PathBuf::from(store_path), addr).await?;
-            Ok(Self {
-                inner: Mutex::new(client),
-            })
+            let inner = pm_core::Client::restore(&seed, &PathBuf::from(store_path), addr).await?;
+            Ok(Self { inner })
         })
         .await
     }
@@ -212,38 +232,36 @@ impl FfiClient {
     ) -> Result<Self, FfiError> {
         compat(async move {
             let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-            let client =
+            let inner =
                 pm_core::Client::import_backup(&seed, &PathBuf::from(store_path), &backup_bytes)
                     .await?;
-            Ok(Self {
-                inner: Mutex::new(client),
-            })
+            Ok(Self { inner })
         })
         .await
     }
 
     pub async fn identity_key(&self) -> Vec<u8> {
-        compat(async { self.inner.lock().await.identity_key().to_vec() }).await
+        compat(async { self.inner.identity_key().to_vec() }).await
     }
 
     pub async fn curve25519_key(&self) -> Vec<u8> {
-        compat(async { self.inner.lock().await.curve25519_key().to_vec() }).await
+        compat(async { self.inner.curve25519_key().to_vec() }).await
     }
 
     /// Generates a one-time key for a pairing partner (stand-in for what a
     /// real QR payload would carry — see `pm-core`'s docs).
     pub async fn generate_one_time_key(&self) -> Result<Vec<u8>, FfiError> {
-        compat(async {
-            let mut inner = self.inner.lock().await;
-            Ok(inner.generate_one_time_key()?.to_vec())
-        })
-        .await
+        compat(async { Ok(self.inner.generate_one_time_key()?.to_vec()) }).await
     }
 
     pub async fn list_contacts(&self) -> Result<Vec<FfiContact>, FfiError> {
         compat(async {
-            let inner = self.inner.lock().await;
-            Ok(inner.list_contacts()?.into_iter().map(Into::into).collect())
+            Ok(self
+                .inner
+                .list_contacts()?
+                .into_iter()
+                .map(Into::into)
+                .collect())
         })
         .await
     }
@@ -251,8 +269,7 @@ impl FfiClient {
     /// This device's own Server mailbox address, if it has configured one.
     pub async fn own_server_addr(&self) -> Result<Option<String>, FfiError> {
         compat(async {
-            let inner = self.inner.lock().await;
-            inner
+            self.inner
                 .own_server_addr()
                 .map(|addr| format_addr(&addr))
                 .transpose()
@@ -265,8 +282,7 @@ impl FfiClient {
     pub async fn set_own_server_addr(&self, addr: String) -> Result<(), FfiError> {
         compat(async move {
             let addr = parse_addr(&addr)?;
-            let mut inner = self.inner.lock().await;
-            inner.set_own_server_addr(addr)?;
+            self.inner.set_own_server_addr(addr)?;
             Ok(())
         })
         .await
@@ -274,8 +290,7 @@ impl FfiClient {
 
     pub async fn clear_own_server_addr(&self) -> Result<(), FfiError> {
         compat(async {
-            let mut inner = self.inner.lock().await;
-            inner.clear_own_server_addr()?;
+            self.inner.clear_own_server_addr()?;
             Ok(())
         })
         .await
@@ -285,11 +300,7 @@ impl FfiClient {
     /// returned `nonce` — it's needed again, unchanged, when this same
     /// pairing attempt is completed via `add_contact_from_payload`.
     pub async fn pairing_payload(&self) -> Result<FfiPairingPayload, FfiError> {
-        compat(async {
-            let mut inner = self.inner.lock().await;
-            Ok(inner.pairing_payload()?.into())
-        })
-        .await
+        compat(async { Ok(self.inner.pairing_payload()?.into()) }).await
     }
 
     /// Completes a pairing exchange: `their` is the partner's
@@ -305,8 +316,8 @@ impl FfiClient {
             let their: pm_core::PairingPayload = their.try_into()?;
             let my_nonce = to_32(my_nonce, "my_nonce")?;
 
-            let mut inner = self.inner.lock().await;
-            Ok(inner
+            Ok(self
+                .inner
                 .add_contact_from_payload(their, my_nonce, display_name.as_deref())
                 .await?)
         })
@@ -319,6 +330,7 @@ impl FfiClient {
         their_identity_key: Vec<u8>,
         their_curve25519_key: Vec<u8>,
         their_one_time_key: Vec<u8>,
+        their_transport_key: Vec<u8>,
         display_name: Option<String>,
         their_server_addr: Option<String>,
         pair_secret: Vec<u8>,
@@ -327,15 +339,17 @@ impl FfiClient {
             let their_identity_key = to_32(their_identity_key, "their_identity_key")?;
             let their_curve25519_key = to_32(their_curve25519_key, "their_curve25519_key")?;
             let their_one_time_key = to_32(their_one_time_key, "their_one_time_key")?;
+            let their_transport_key = to_32(their_transport_key, "their_transport_key")?;
             let pair_secret = to_32(pair_secret, "pair_secret")?;
             let their_server_addr = their_server_addr.map(|s| parse_addr(&s)).transpose()?;
 
-            let mut inner = self.inner.lock().await;
-            let id = inner
+            let id = self
+                .inner
                 .add_contact(
                     their_identity_key,
                     their_curve25519_key,
                     their_one_time_key,
+                    their_transport_key,
                     display_name.as_deref(),
                     their_server_addr,
                     pair_secret,
@@ -346,29 +360,29 @@ impl FfiClient {
         .await
     }
 
+    /// Encrypts and delivers a message — via the recipient's Server
+    /// mailbox if they have one, otherwise a direct Local P2P attempt (see
+    /// `pm-core::Client::send`'s docs for the ~15-20s timeout and what a
+    /// failure means for the caller).
     pub async fn send(&self, contact_id: i64, plaintext: Vec<u8>) -> Result<(), FfiError> {
         compat(async move {
-            let mut inner = self.inner.lock().await;
-            inner.send(contact_id, &plaintext).await?;
+            self.inner.send(contact_id, &plaintext).await?;
             Ok(())
         })
         .await
     }
 
     /// Fetches and processes new messages from this client's own Server.
-    /// Returns how many were processed.
+    /// Returns how many new *chat* messages were processed (delivery
+    /// receipts update existing messages' status rather than counting).
     pub async fn sync(&self) -> Result<u32, FfiError> {
-        compat(async {
-            let mut inner = self.inner.lock().await;
-            Ok(inner.sync().await? as u32)
-        })
-        .await
+        compat(async { Ok(self.inner.sync().await? as u32) }).await
     }
 
     pub async fn messages_for_contact(&self, contact_id: i64) -> Result<Vec<FfiMessage>, FfiError> {
-        compat(async move {
-            let inner = self.inner.lock().await;
-            Ok(inner
+        compat(async {
+            Ok(self
+                .inner
                 .messages_for_contact(contact_id)?
                 .into_iter()
                 .map(Into::into)
@@ -379,8 +393,7 @@ impl FfiClient {
 
     pub async fn push_backup(&self) -> Result<(), FfiError> {
         compat(async {
-            let inner = self.inner.lock().await;
-            inner.push_backup().await?;
+            self.inner.push_backup().await?;
             Ok(())
         })
         .await
@@ -390,11 +403,7 @@ impl FfiClient {
     /// returns the ciphertext directly instead of pushing it to a Server —
     /// works with no Server mailbox configured at all.
     pub async fn export_backup(&self) -> Result<Vec<u8>, FfiError> {
-        compat(async {
-            let inner = self.inner.lock().await;
-            Ok(inner.export_backup()?)
-        })
-        .await
+        compat(async { Ok(self.inner.export_backup()?) }).await
     }
 }
 

@@ -145,7 +145,6 @@ export default function ConversationListScreen() {
             <Text style={styles.rowName}>
               {item.contact.displayName ??
                 shortHex(item.contact.identityKey)}
-              {!item.contact.hasServer && ' (Local only)'}
             </Text>
             <Text style={styles.rowPreview} numberOfLines={1}>
               {item.lastMessage

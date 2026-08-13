@@ -20,21 +20,29 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
     let alice_identity = pm_crypto::Identity::derive(&alice_seed);
     let bob_identity = pm_crypto::Identity::derive(&bob_seed);
 
-    let (alice_router, _alice_store) = pm_node::spawn(alice_identity.mailbox_key).await.unwrap();
-    let (bob_router, _bob_store) = pm_node::spawn(bob_identity.mailbox_key).await.unwrap();
+    let (alice_router, _alice_store) = pm_node::spawn(
+        alice_identity.mailbox_key,
+        alice_identity.server_transport_key,
+    )
+    .await
+    .unwrap();
+    let (bob_router, _bob_store) =
+        pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
+            .await
+            .unwrap();
     alice_router.endpoint().online().await;
     bob_router.endpoint().online().await;
     let alice_server_addr = alice_router.endpoint().addr();
     let bob_server_addr = bob_router.endpoint().addr();
 
     // --- Alice and Bob's clients ---
-    let mut alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
+    let alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
         .await
         .unwrap();
     alice
         .set_own_server_addr(alice_server_addr.clone())
         .unwrap();
-    let mut bob = Client::open(&bob_seed, &dir.path().join("bob-original.sqlite"))
+    let bob = Client::open(&bob_seed, &dir.path().join("bob-original.sqlite"))
         .await
         .unwrap();
     bob.set_own_server_addr(bob_server_addr.clone()).unwrap();
@@ -51,6 +59,7 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
             bob_identity.signing_key.verifying_key().to_bytes(),
             bob.curve25519_key(),
             bob_otk,
+            bob_identity.transport_key,
             Some("Bob"),
             Some(bob_server_addr.clone()),
             pair_secret,
@@ -62,6 +71,7 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
             alice_identity.signing_key.verifying_key().to_bytes(),
             alice.curve25519_key(),
             alice_otk,
+            alice_identity.transport_key,
             Some("Alice"),
             Some(alice_server_addr.clone()),
             pair_secret,
@@ -94,7 +104,7 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
     // --- Restore on a "new device": identity from the seed phrase alone,
     // contacts and history from the backup on Bob's own server (whose
     // address Bob re-enters, per this build's scope). ---
-    let mut restored_bob = Client::restore(
+    let restored_bob = Client::restore(
         &bob_seed,
         &dir.path().join("bob-restored.sqlite"),
         bob_server_addr.clone(),

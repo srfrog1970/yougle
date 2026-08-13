@@ -17,20 +17,28 @@ async fn mutual_pairing_lands_on_the_same_secret_and_a_working_conversation() {
     let alice_identity = pm_crypto::Identity::derive(&alice_seed);
     let bob_identity = pm_crypto::Identity::derive(&bob_seed);
 
-    let (alice_router, _alice_store) = pm_node::spawn(alice_identity.mailbox_key).await.unwrap();
-    let (bob_router, _bob_store) = pm_node::spawn(bob_identity.mailbox_key).await.unwrap();
+    let (alice_router, _alice_store) = pm_node::spawn(
+        alice_identity.mailbox_key,
+        alice_identity.server_transport_key,
+    )
+    .await
+    .unwrap();
+    let (bob_router, _bob_store) =
+        pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
+            .await
+            .unwrap();
     alice_router.endpoint().online().await;
     bob_router.endpoint().online().await;
     let alice_server_addr = alice_router.endpoint().addr();
     let bob_server_addr = bob_router.endpoint().addr();
 
-    let mut alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
+    let alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
         .await
         .unwrap();
     alice
         .set_own_server_addr(alice_server_addr.clone())
         .unwrap();
-    let mut bob = Client::open(&bob_seed, &dir.path().join("bob.sqlite"))
+    let bob = Client::open(&bob_seed, &dir.path().join("bob.sqlite"))
         .await
         .unwrap();
     bob.set_own_server_addr(bob_server_addr.clone()).unwrap();
@@ -83,7 +91,7 @@ async fn local_backup_export_and_import_roundtrip_without_any_server() {
     let dir = tempdir().unwrap();
     let (seed, _) = Seed::generate();
 
-    let mut original = Client::open(&seed, &dir.path().join("original.sqlite"))
+    let original = Client::open(&seed, &dir.path().join("original.sqlite"))
         .await
         .unwrap();
 
@@ -91,7 +99,7 @@ async fn local_backup_export_and_import_roundtrip_without_any_server() {
     // mailbox configured on this client at all.
     let (contact_seed, _) = Seed::generate();
     let contact_identity = pm_crypto::Identity::derive(&contact_seed);
-    let mut contact_client = Client::open(&contact_seed, &dir.path().join("contact.sqlite"))
+    let contact_client = Client::open(&contact_seed, &dir.path().join("contact.sqlite"))
         .await
         .unwrap();
 
@@ -125,14 +133,16 @@ async fn own_server_addr_persists_across_close_and_reopen() {
     let dir = tempdir().unwrap();
     let (seed, _) = Seed::generate();
     let identity = pm_crypto::Identity::derive(&seed);
-    let (router, _store) = pm_node::spawn(identity.mailbox_key).await.unwrap();
+    let (router, _store) = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+        .await
+        .unwrap();
     router.endpoint().online().await;
     let server_addr = router.endpoint().addr();
 
     let store_path = dir.path().join("store.sqlite");
 
     {
-        let mut client = Client::open(&seed, &store_path).await.unwrap();
+        let client = Client::open(&seed, &store_path).await.unwrap();
         assert_eq!(client.own_server_addr(), None);
         client.set_own_server_addr(server_addr.clone()).unwrap();
         assert_eq!(client.own_server_addr(), Some(server_addr.clone()));

@@ -12,6 +12,7 @@ const PREFIX = 'yougle-pair-v1:';
 type WirePayload = {
   identityKey: string;
   curve25519Key: string;
+  transportKey: string;
   oneTimeKey: string;
   nonce: string;
   serverAddr?: string;
@@ -21,6 +22,7 @@ export function encodePairingPayload(payload: FfiPairingPayload): string {
   const wire: WirePayload = {
     identityKey: bufferToHex(payload.identityKey),
     curve25519Key: bufferToHex(payload.curve25519Key),
+    transportKey: bufferToHex(payload.transportKey),
     oneTimeKey: bufferToHex(payload.oneTimeKey),
     nonce: bufferToHex(payload.nonce),
     serverAddr: payload.serverAddr ? bufferToHex(payload.serverAddr) : undefined,
@@ -42,6 +44,7 @@ export function decodePairingPayload(code: string): FfiPairingPayload {
   return {
     identityKey: hexToBuffer(wire.identityKey),
     curve25519Key: hexToBuffer(wire.curve25519Key),
+    transportKey: hexToBuffer(wire.transportKey),
     oneTimeKey: hexToBuffer(wire.oneTimeKey),
     nonce: hexToBuffer(wire.nonce),
     serverAddr: wire.serverAddr ? hexToBuffer(wire.serverAddr) : undefined,

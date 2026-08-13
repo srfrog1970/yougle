@@ -5,6 +5,7 @@
 pub mod backup;
 pub mod client;
 pub mod error;
+mod message;
 pub mod pairing;
 
 pub use backup::{BackupBundle, BackupContact};

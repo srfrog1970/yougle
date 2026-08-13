@@ -7,12 +7,14 @@
 //! `pm-crypto`, `pm-store`, and `pm-transport`.
 
 pub mod derive;
+pub mod direct_protocol;
 pub mod envelope;
 pub mod error;
 pub mod node_protocol;
 pub mod padding;
 
 pub use derive::derive;
+pub use direct_protocol::{DirectAck, DIRECT_ALPN};
 pub use envelope::{AttachmentRef, Envelope, ENVELOPE_VERSION};
 pub use error::{ProtoError, Result};
 pub use node_protocol::{NodeRequest, NodeResponse, StoredBlob, MAX_MESSAGE_SIZE, NODE_ALPN};

@@ -134,6 +134,12 @@ export default function PairingScreen() {
             multiline
             autoCapitalize="none"
             autoCorrect={false}
+            // M6 lengthened pairing codes enough (the added transportKey
+            // field) to hit a real Android/Fabric TextInput crash
+            // ("TextLayoutManager... Required value was null") on long
+            // unbroken strings under the default 'highQuality' break
+            // strategy — 'simple' is the documented workaround.
+            textBreakStrategy="simple"
           />
           <TextInput
             style={styles.input}

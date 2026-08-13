@@ -39,6 +39,35 @@ impl Direction {
     }
 }
 
+/// Delivery status for an outgoing message (see migration 0006). Never set
+/// for incoming messages — `NewMessage::status`/`StoredMessage::status` are
+/// `None` there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MessageStatus {
+    Sent,
+    Delivered,
+    Failed,
+}
+
+impl MessageStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            MessageStatus::Sent => "sent",
+            MessageStatus::Delivered => "delivered",
+            MessageStatus::Failed => "failed",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "sent" => Some(MessageStatus::Sent),
+            "delivered" => Some(MessageStatus::Delivered),
+            "failed" => Some(MessageStatus::Failed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactRecord {
     pub id: i64,
@@ -52,6 +81,9 @@ pub struct ContactRecord {
     /// consumed by a first outbound message. See migration 0004 for why
     /// this exists rather than an eagerly-established session.
     pub pending_otk: Option<[u8; 32]>,
+    /// This contact's iroh transport public key, shared at pairing — lets
+    /// this device dial them directly for Local delivery (see M6).
+    pub transport_key: Option<[u8; 32]>,
 }
 
 pub struct NewMessage<'a> {
@@ -60,6 +92,7 @@ pub struct NewMessage<'a> {
     pub lamport: u64,
     pub sent_at: u64,
     pub plaintext: &'a [u8],
+    pub status: Option<MessageStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -69,6 +102,7 @@ pub struct StoredMessage {
     pub lamport: u64,
     pub sent_at: u64,
     pub plaintext: Vec<u8>,
+    pub status: Option<MessageStatus>,
 }
 
 /// A single user's encrypted local database: contacts, session state, and
@@ -174,8 +208,8 @@ impl Store {
 
     pub fn insert_message(&self, contact_id: i64, msg: NewMessage) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO messages (contact_id, msg_id, direction, lamport, sent_at, plaintext, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())",
+            "INSERT INTO messages (contact_id, msg_id, direction, lamport, sent_at, plaintext, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())",
             params![
                 contact_id,
                 msg.msg_id.as_slice(),
@@ -183,7 +217,26 @@ impl Store {
                 msg.lamport as i64,
                 msg.sent_at as i64,
                 msg.plaintext,
+                msg.status.map(MessageStatus::as_str),
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Updates an outgoing message's delivery status, looked up by its
+    /// `msg_id` (unique per contact — see migration 0001's UNIQUE
+    /// constraint). A no-op if no message with that id exists for this
+    /// contact (e.g. a receipt arriving for a message this device never
+    /// actually sent — ignored, not an error).
+    pub fn set_message_status(
+        &self,
+        contact_id: i64,
+        msg_id: &[u8; 16],
+        status: MessageStatus,
+    ) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE messages SET status = ?1 WHERE contact_id = ?2 AND msg_id = ?3",
+            params![status.as_str(), contact_id, msg_id.as_slice()],
         )?;
         Ok(())
     }
@@ -192,7 +245,7 @@ impl Store {
     pub fn messages_for_contact(&self, contact_id: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT msg_id, direction, lamport, sent_at, plaintext
+            "SELECT msg_id, direction, lamport, sent_at, plaintext, status
              FROM messages WHERE contact_id = ?1 ORDER BY lamport ASC",
         )?;
         let rows = stmt.query_map([contact_id], |row| {
@@ -201,12 +254,13 @@ impl Store {
             let lamport: i64 = row.get(2)?;
             let sent_at: i64 = row.get(3)?;
             let plaintext: Vec<u8> = row.get(4)?;
-            Ok((msg_id, direction, lamport, sent_at, plaintext))
+            let status: Option<String> = row.get(5)?;
+            Ok((msg_id, direction, lamport, sent_at, plaintext, status))
         })?;
 
         let mut out = Vec::new();
         for row in rows {
-            let (msg_id, direction, lamport, sent_at, plaintext) = row?;
+            let (msg_id, direction, lamport, sent_at, plaintext, status) = row?;
             let msg_id: [u8; 16] = msg_id
                 .try_into()
                 .map_err(|v: Vec<u8>| StoreError::InvalidMsgIdLength(v.len()))?;
@@ -216,6 +270,7 @@ impl Store {
                 lamport: lamport as u64,
                 sent_at: sent_at as u64,
                 plaintext,
+                status: status.and_then(|s| MessageStatus::from_str(&s)),
             });
         }
         Ok(out)
@@ -285,6 +340,20 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// Records a contact's iroh transport public key, shared at pairing
+    /// time — see `ContactRecord::transport_key`.
+    pub fn set_contact_transport_key(
+        &self,
+        contact_id: i64,
+        transport_key: &[u8; 32],
+    ) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE contacts SET transport_key = ?1 WHERE id = ?2",
+            params![transport_key.as_slice(), contact_id],
+        )?;
+        Ok(())
+    }
+
     /// Records the shared pairing secret for a contact (stand-in for real
     /// pairing output — see `pm-core`).
     pub fn set_contact_pair_secret(&self, contact_id: i64, pair_secret: &[u8; 32]) -> Result<()> {
@@ -326,7 +395,7 @@ impl Store {
     pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk
+            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk, transport_key
              FROM contacts ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -338,6 +407,7 @@ impl Store {
             let pair_secret: Option<Vec<u8>> = row.get(5)?;
             let next_write_n: i64 = row.get(6)?;
             let pending_otk: Option<Vec<u8>> = row.get(7)?;
+            let transport_key: Option<Vec<u8>> = row.get(8)?;
             Ok((
                 id,
                 identity_key,
@@ -347,6 +417,7 @@ impl Store {
                 pair_secret,
                 next_write_n,
                 pending_otk,
+                transport_key,
             ))
         })?;
 
@@ -361,6 +432,7 @@ impl Store {
                 pair_secret,
                 next_write_n,
                 pending_otk,
+                transport_key,
             ) = row?;
             out.push(ContactRecord {
                 id,
@@ -375,6 +447,7 @@ impl Store {
                 pair_secret: pair_secret.and_then(|v| v.try_into().ok()),
                 next_write_n: next_write_n as u64,
                 pending_otk: pending_otk.and_then(|v| v.try_into().ok()),
+                transport_key: transport_key.and_then(|v| v.try_into().ok()),
             });
         }
         Ok(out)
@@ -504,6 +577,7 @@ mod tests {
                         lamport,
                         sent_at: 1_754_000_000_000,
                         plaintext: text.as_bytes(),
+                        status: None,
                     },
                 )
                 .unwrap();
@@ -536,6 +610,7 @@ mod tests {
                         lamport: 1,
                         sent_at: 1_754_000_000_000,
                         plaintext: b"persisted",
+                        status: Some(MessageStatus::Sent),
                     },
                 )
                 .unwrap();
@@ -603,6 +678,72 @@ mod tests {
         assert_eq!(store.increment_and_get_next_write_n(contact_id).unwrap(), 0);
         assert_eq!(store.increment_and_get_next_write_n(contact_id).unwrap(), 1);
         assert_eq!(store.increment_and_get_next_write_n(contact_id).unwrap(), 2);
+    }
+
+    #[test]
+    fn contact_transport_key_starts_unset_then_roundtrips() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
+        assert_eq!(
+            store
+                .get_contact(contact_id)
+                .unwrap()
+                .unwrap()
+                .transport_key,
+            None
+        );
+
+        store
+            .set_contact_transport_key(contact_id, &[6u8; 32])
+            .unwrap();
+        assert_eq!(
+            store
+                .get_contact(contact_id)
+                .unwrap()
+                .unwrap()
+                .transport_key,
+            Some([6u8; 32])
+        );
+    }
+
+    #[test]
+    fn message_status_starts_none_then_roundtrips_and_ignores_unknown_msg_id() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
+        let msg_id = [3u8; 16];
+
+        store
+            .insert_message(
+                contact_id,
+                NewMessage {
+                    msg_id,
+                    direction: Direction::Outgoing,
+                    lamport: 1,
+                    sent_at: 1_754_000_000_000,
+                    plaintext: b"hi",
+                    status: Some(MessageStatus::Sent),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.messages_for_contact(contact_id).unwrap()[0].status,
+            Some(MessageStatus::Sent)
+        );
+
+        store
+            .set_message_status(contact_id, &msg_id, MessageStatus::Delivered)
+            .unwrap();
+        assert_eq!(
+            store.messages_for_contact(contact_id).unwrap()[0].status,
+            Some(MessageStatus::Delivered)
+        );
+
+        // A receipt for a msg_id this contact never actually has is just
+        // ignored, not an error — e.g. a stale/duplicate receipt.
+        store
+            .set_message_status(contact_id, &[99u8; 16], MessageStatus::Delivered)
+            .unwrap();
+        assert_eq!(store.messages_for_contact(contact_id).unwrap().len(), 1);
     }
 
     #[test]

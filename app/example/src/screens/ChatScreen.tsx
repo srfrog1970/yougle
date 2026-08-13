@@ -1,14 +1,13 @@
 // docs/PRD.md §7: "Chat view — text messages; status shown as sent /
 // delivered / failed-to-deliver... No read receipts, no attachments."
 //
-// M5 scope note: only the Server-mailbox delivery path is wired up in
-// pm-core yet (Local-to-local live delivery and a true "delivered" receipt
-// are M6 — see pm-core::client's module doc comment). pm-core's `send`
-// only persists a message once the write to the recipient's Server
-// actually succeeds, so presence in `messagesForContact` already means
-// "sent" — there's nothing further to track here honestly yet. A failed
-// send throws, is shown inline, and leaves the compose box untouched so
-// the user can retry, matching §7's local-failure behavior.
+// M6: pm-core now delivers either via the recipient's Server mailbox or,
+// if they have none on file, directly (Local-to-local) — `send` persists
+// whichever status delivery actually achieved, and a later delivery
+// receipt (Server path only; a direct send is already synchronous
+// confirmation) flips a message from Sent to Delivered on the next sync.
+// A failed send still throws, is shown inline, and leaves the compose box
+// untouched so the user can retry, matching §7's local-failure behavior.
 
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -24,6 +23,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { FfiMessageStatus } from 'yougle-native';
 import type { FfiMessage } from 'yougle-native';
 
 import { describeError, useClient } from '../lib/client';
@@ -78,6 +78,19 @@ export default function ChatScreen() {
     }
   }, [client, contactId, draft, load]);
 
+  const statusLabel = (status: FfiMessageStatus | undefined) => {
+    switch (status) {
+      case FfiMessageStatus.Delivered:
+        return 'Delivered';
+      case FfiMessageStatus.Failed:
+        return 'Failed to send';
+      case FfiMessageStatus.Sent:
+        return 'Sent';
+      default:
+        return null;
+    }
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -89,12 +102,21 @@ export default function ChatScreen() {
         renderItem={({ item }) => (
           <View
             style={[
-              styles.bubble,
-              item.outgoing ? styles.bubbleOut : styles.bubbleIn,
+              styles.bubbleRow,
+              item.outgoing ? styles.bubbleRowOut : styles.bubbleRowIn,
             ]}>
-            <Text style={item.outgoing ? styles.bubbleTextOut : styles.bubbleTextIn}>
-              {bufferToText(item.plaintext)}
-            </Text>
+            <View
+              style={[
+                styles.bubble,
+                item.outgoing ? styles.bubbleOut : styles.bubbleIn,
+              ]}>
+              <Text style={item.outgoing ? styles.bubbleTextOut : styles.bubbleTextIn}>
+                {bufferToText(item.plaintext)}
+              </Text>
+            </View>
+            {item.outgoing && statusLabel(item.status) && (
+              <Text style={styles.statusLabel}>{statusLabel(item.status)}</Text>
+            )}
           </View>
         )}
         ListEmptyComponent={
@@ -127,16 +149,19 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   list: { flex: 1, padding: 12 },
   empty: { color: '#888', textAlign: 'center', marginTop: 32 },
+  bubbleRow: { marginVertical: 4 },
+  bubbleRowOut: { alignItems: 'flex-end' },
+  bubbleRowIn: { alignItems: 'flex-start' },
   bubble: {
     maxWidth: '80%',
     padding: 10,
     borderRadius: 12,
-    marginVertical: 4,
   },
   bubbleOut: { backgroundColor: '#007aff', alignSelf: 'flex-end' },
   bubbleIn: { backgroundColor: '#eee', alignSelf: 'flex-start' },
   bubbleTextOut: { color: '#fff' },
   bubbleTextIn: { color: '#000' },
+  statusLabel: { color: '#999', fontSize: 11, marginTop: 2, marginHorizontal: 4 },
   error: { color: 'crimson', paddingHorizontal: 12 },
   composeRow: {
     flexDirection: 'row',

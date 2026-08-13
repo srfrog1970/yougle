@@ -156,6 +156,7 @@ extern "C" {
         RustBuffer their_identity_key, 
         RustBuffer their_curve25519_key, 
         RustBuffer their_one_time_key, 
+        RustBuffer their_transport_key, 
         RustBuffer display_name, 
         RustBuffer their_server_addr, 
         RustBuffer pair_secret
@@ -1949,7 +1950,7 @@ NativePmFfi::NativePmFfi(
     props["ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact"] = jsi::Function::createFromHostFunction(
         rt,
         jsi::PropNameID::forAscii(rt, "ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact"),
-        7,
+        8,
         [this](jsi::Runtime &rt, const jsi::Value &thisVal, const jsi::Value *args, size_t count) -> jsi::Value {
             return this->cpp_uniffi_pm_ffi_fn_method_fficlient_add_contact(rt, thisVal, args, count);
         }
@@ -2817,7 +2818,7 @@ jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_constructor_fficlient_restore(jsi::
         return uniffi_jsi::Bridging</*handle*/ uint64_t>::toJs(rt, callInvoker, value);
 }
 jsi::Value NativePmFfi::cpp_uniffi_pm_ffi_fn_method_fficlient_add_contact(jsi::Runtime& rt, const jsi::Value& thisVal, const jsi::Value* args, size_t count) {
-        auto value = uniffi_pm_ffi_fn_method_fficlient_add_contact(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[3]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[4]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[5]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[6])
+        auto value = uniffi_pm_ffi_fn_method_fficlient_add_contact(uniffi_jsi::Bridging</*handle*/ uint64_t>::fromJs(rt, callInvoker, args[0]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[1]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[2]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[3]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[4]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[5]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[6]), uniffi::pm_ffi::Bridging<RustBuffer>::fromJs(rt, callInvoker, args[7])
         );
 
         

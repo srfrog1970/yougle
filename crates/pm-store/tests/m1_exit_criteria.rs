@@ -9,7 +9,7 @@
 use ed25519_dalek::Signer;
 use pm_crypto::{Identity, MyAccount, MySession, Seed};
 use pm_proto::Envelope;
-use pm_store::{Direction, NewMessage, Store};
+use pm_store::{Direction, MessageStatus, NewMessage, Store};
 use tempfile::tempdir;
 
 /// Round-trips an Envelope through pm-proto's padding/serialization, as it
@@ -111,6 +111,7 @@ fn two_identities_exchange_encrypted_messages_and_persist_them() {
                 lamport: alice_lamport,
                 sent_at: envelope.sent_at,
                 plaintext: plaintext_1,
+                status: Some(MessageStatus::Sent),
             },
         )
         .unwrap();
@@ -125,6 +126,7 @@ fn two_identities_exchange_encrypted_messages_and_persist_them() {
                 lamport: bob_lamport,
                 sent_at: envelope.sent_at,
                 plaintext: &decrypted_1,
+                status: None,
             },
         )
         .unwrap();
@@ -155,6 +157,7 @@ fn two_identities_exchange_encrypted_messages_and_persist_them() {
                 lamport: bob_lamport_2,
                 sent_at: envelope_2.sent_at,
                 plaintext: plaintext_2,
+                status: Some(MessageStatus::Sent),
             },
         )
         .unwrap();
@@ -168,6 +171,7 @@ fn two_identities_exchange_encrypted_messages_and_persist_them() {
                 lamport: alice_lamport_2,
                 sent_at: envelope_2.sent_at,
                 plaintext: &decrypted_2,
+                status: None,
             },
         )
         .unwrap();

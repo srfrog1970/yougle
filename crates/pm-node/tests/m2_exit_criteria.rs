@@ -28,16 +28,21 @@ async fn two_clients_exchange_a_message_through_the_node() {
     let bob_identity = Identity::derive(&bob_seed);
 
     // --- Start Bob's node ---
-    let (router, store) = pm_node::spawn(bob_identity.mailbox_key)
-        .await
-        .expect("node starts");
+    let (router, store) =
+        pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
+            .await
+            .expect("node starts");
     router.endpoint().online().await;
     let node_addr = router.endpoint().addr();
 
     // --- Two independent client endpoints — separate network identities,
     // standing in for "separate processes" ---
-    let alice_client = NodeClient::new().await.expect("alice's endpoint binds");
-    let bob_client = NodeClient::new().await.expect("bob's endpoint binds");
+    let alice_client = NodeClient::new(alice_identity.transport_key)
+        .await
+        .expect("alice's endpoint binds");
+    let bob_client = NodeClient::new(bob_identity.transport_key)
+        .await
+        .expect("bob's endpoint binds");
 
     // --- Bob registers a write slot for Alice, using an auth value derived
     // the same way pairing would eventually derive one (pm-core doesn't

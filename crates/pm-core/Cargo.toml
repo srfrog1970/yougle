@@ -18,6 +18,7 @@ bincode = "1"
 vodozemac = "0.10"
 iroh = "1"
 rand = "0.8"
+tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
 pm-node = { path = "../pm-node" }

@@ -12,10 +12,15 @@ use crate::error::Result;
 /// opaque, `pm-core`-interpreted bytes also used elsewhere (see
 /// `pm_store::ContactRecord::server_addr`), included so the other side can
 /// message this device immediately without a separate exchange.
+/// `transport_key` is this device's iroh transport public key — needed so
+/// the other side can dial it directly for Local delivery (see M6); unlike
+/// `server_addr`, always present (not `Option`), since every device has
+/// one regardless of whether it also has a Server mailbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingPayload {
     pub identity_key: [u8; 32],
     pub curve25519_key: [u8; 32],
+    pub transport_key: [u8; 32],
     pub one_time_key: [u8; 32],
     pub nonce: [u8; 32],
     pub server_addr: Option<Vec<u8>>,

@@ -73,7 +73,7 @@ interface NativeModuleInterface {
     ubrn_uniffi_pm_ffi_fn_constructor_fficlient_import_backup(seedPhrase: Uint8Array, storePath: Uint8Array, backupBytes: Uint8Array): bigint;
     ubrn_uniffi_pm_ffi_fn_constructor_fficlient_open(seedPhrase: Uint8Array, storePath: Uint8Array): bigint;
     ubrn_uniffi_pm_ffi_fn_constructor_fficlient_restore(seedPhrase: Uint8Array, storePath: Uint8Array, serverAddr: Uint8Array): bigint;
-    ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact(uniffiSelf: bigint, theirIdentityKey: Uint8Array, theirCurve25519Key: Uint8Array, theirOneTimeKey: Uint8Array, displayName: Uint8Array, theirServerAddr: Uint8Array, pairSecret: Uint8Array): bigint;
+    ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact(uniffiSelf: bigint, theirIdentityKey: Uint8Array, theirCurve25519Key: Uint8Array, theirOneTimeKey: Uint8Array, theirTransportKey: Uint8Array, displayName: Uint8Array, theirServerAddr: Uint8Array, pairSecret: Uint8Array): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact_from_payload(uniffiSelf: bigint, their: Uint8Array, myNonce: Uint8Array, displayName: Uint8Array): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_clear_own_server_addr(uniffiSelf: bigint): bigint;
     ubrn_uniffi_pm_ffi_fn_method_fficlient_curve25519_key(uniffiSelf: bigint): bigint;

@@ -17,8 +17,14 @@ pub enum CoreError {
     #[error("unknown contact id {0}")]
     UnknownContact(i64),
 
-    #[error("sending to this contact requires a known Server mailbox address; direct Local delivery isn't wired into pm-core yet (deferred to M4/M5)")]
-    NoServerForContact,
+    #[error("no way to reach this contact: no Server mailbox and no transport key on file")]
+    NoRouteToContact,
+
+    #[error("can't establish a session with this contact: no session exists and no pending one-time key was recorded at pairing")]
+    NoSessionAvailable,
+
+    #[error("direct delivery to this contact timed out")]
+    DirectDeliveryTimedOut,
 
     #[error("this client has no Server mailbox configured, so there's nothing to sync")]
     NoOwnServer,

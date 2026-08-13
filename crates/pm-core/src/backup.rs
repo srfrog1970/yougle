@@ -96,6 +96,7 @@ pub fn restore_into(store: &pm_store::Store, bundle: &BackupBundle) -> Result<()
                     lamport: m.lamport,
                     sent_at: m.sent_at,
                     plaintext: &m.plaintext,
+                    status: m.status,
                 },
             )?;
         }

@@ -6,7 +6,7 @@
 import nativeModule from "./pm_ffi-ffi";
 import { type UniffiRustFutureContinuationCallback, type UniffiForeignFutureDroppedCallback, type UniffiForeignFutureDroppedCallbackStruct,
 } from "./pm_ffi-ffi";
-import { type FfiConverter, type UniffiByteArray, type UniffiGcObject, type UniffiHandle, type UniffiObjectFactory, AbstractFfiConverterByteArray, FfiConverterArray, FfiConverterArrayBuffer, FfiConverterBool, FfiConverterInt32, FfiConverterInt64, FfiConverterObject, FfiConverterOptional, FfiConverterUInt32, FfiConverterUInt64, FfiConverterUInt8, RustBuffer, UniffiAbstractObject, UniffiError, UniffiInternalError, UniffiRustCaller, destructorGuardSymbol, pointerLiteralSymbol, uniffiCreateFfiConverterString, uniffiCreateRecord, uniffiRustCallAsync, uniffiTypeNameSymbol, variantOrdinalSymbol,
+import { type FfiConverter, type UniffiByteArray, type UniffiGcObject, type UniffiHandle, type UniffiObjectFactory, AbstractFfiConverterByteArray, FfiConverterArray, FfiConverterArrayBuffer, FfiConverterBool, FfiConverterInt32, FfiConverterInt64, FfiConverterObject, FfiConverterOptional, FfiConverterUInt32, FfiConverterUInt64, FfiConverterUInt8, RustBuffer, UniffiAbstractObject, UniffiEnum, UniffiError, UniffiInternalError, UniffiRustCaller, destructorGuardSymbol, pointerLiteralSymbol, uniffiCreateFfiConverterString, uniffiCreateRecord, uniffiRustCallAsync, uniffiTypeNameSymbol, variantOrdinalSymbol,
 } from "@ubjs/core";
 const uniffiCaller = new UniffiRustCaller(() => ({ code: 0 }));
 
@@ -97,9 +97,10 @@ export type FfiContact = {
     curve25519Key: ArrayBuffer,
     displayName?: string,
     /**
-     * Whether this contact has a Server mailbox on file — until M6 (see
-     * `pm-core`'s module-level scope note), sending only works when this
-     * is true.
+     * Whether this contact has a Server mailbox on file. Sending works
+     * either way as of M6 (a contact with no Server mailbox gets a direct
+     * Local delivery attempt instead) — this is informational (e.g. for
+     * showing "Local only" in a contact list), not a capability gate.
      */
     hasServer: boolean
 }
@@ -151,12 +152,49 @@ const FfiConverterTypeFfiContact = (() => {
     return new FFIConverter();
 })();
 
+/**
+ * Delivery status for an outgoing message — see `pm_store::MessageStatus`.
+ * `None` for incoming messages, where status isn't a concept that applies.
+ */
+export enum FfiMessageStatus {
+    Sent,
+    Delivered,
+    Failed
+}
+
+const FfiConverterTypeFfiMessageStatus = (() => {
+    const ordinalConverter = FfiConverterInt32;
+    type TypeName = FfiMessageStatus;
+    class FFIConverter extends AbstractFfiConverterByteArray<TypeName> {
+        read(from: RustBuffer): TypeName {
+            switch (ordinalConverter.read(from)) {
+                case 1: return FfiMessageStatus.Sent;
+                case 2: return FfiMessageStatus.Delivered;
+                case 3: return FfiMessageStatus.Failed;
+                default: throw new UniffiInternalError.UnexpectedEnumCase();
+            }
+        }
+        write(value: TypeName, into: RustBuffer): void {
+            switch (value) {
+                case FfiMessageStatus.Sent: return ordinalConverter.write(1, into);
+                case FfiMessageStatus.Delivered: return ordinalConverter.write(2, into);
+                case FfiMessageStatus.Failed: return ordinalConverter.write(3, into);
+            }
+        }
+        allocationSize(value: TypeName): number {
+            return ordinalConverter.allocationSize(0);
+        }
+    }
+    return new FFIConverter();
+})();
+
 export type FfiMessage = {
     msgId: ArrayBuffer,
     outgoing: boolean,
     lamport: bigint,
     sentAt: bigint,
-    plaintext: ArrayBuffer
+    plaintext: ArrayBuffer,
+    status?: FfiMessageStatus
 }
 
 /**
@@ -184,7 +222,8 @@ const FfiConverterTypeFfiMessage = (() => {
                 outgoing: FfiConverterBool.read(from), 
                 lamport: FfiConverterUInt64.read(from), 
                 sentAt: FfiConverterUInt64.read(from), 
-                plaintext: FfiConverterArrayBuffer.read(from)
+                plaintext: FfiConverterArrayBuffer.read(from), 
+                status: FfiConverterOptionalTypeFfiMessageStatus.read(from)
             };
         }
         write(value: TypeName, into: RustBuffer): void {
@@ -193,13 +232,15 @@ const FfiConverterTypeFfiMessage = (() => {
             FfiConverterUInt64.write(value.lamport, into);
             FfiConverterUInt64.write(value.sentAt, into);
             FfiConverterArrayBuffer.write(value.plaintext, into);
+            FfiConverterOptionalTypeFfiMessageStatus.write(value.status, into);
         }
         allocationSize(value: TypeName): number {
             return FfiConverterArrayBuffer.allocationSize(value.msgId) +
              FfiConverterBool.allocationSize(value.outgoing) +
              FfiConverterUInt64.allocationSize(value.lamport) +
              FfiConverterUInt64.allocationSize(value.sentAt) +
-             FfiConverterArrayBuffer.allocationSize(value.plaintext);
+             FfiConverterArrayBuffer.allocationSize(value.plaintext) +
+             FfiConverterOptionalTypeFfiMessageStatus.allocationSize(value.status);
             
         }
     };
@@ -214,6 +255,7 @@ const FfiConverterTypeFfiMessage = (() => {
 export type FfiPairingPayload = {
     identityKey: ArrayBuffer,
     curve25519Key: ArrayBuffer,
+    transportKey: ArrayBuffer,
     oneTimeKey: ArrayBuffer,
     nonce: ArrayBuffer,
     serverAddr?: ArrayBuffer
@@ -242,6 +284,7 @@ const FfiConverterTypeFfiPairingPayload = (() => {
             return {
                 identityKey: FfiConverterArrayBuffer.read(from), 
                 curve25519Key: FfiConverterArrayBuffer.read(from), 
+                transportKey: FfiConverterArrayBuffer.read(from), 
                 oneTimeKey: FfiConverterArrayBuffer.read(from), 
                 nonce: FfiConverterArrayBuffer.read(from), 
                 serverAddr: FfiConverterOptionalBytes.read(from)
@@ -250,6 +293,7 @@ const FfiConverterTypeFfiPairingPayload = (() => {
         write(value: TypeName, into: RustBuffer): void {
             FfiConverterArrayBuffer.write(value.identityKey, into);
             FfiConverterArrayBuffer.write(value.curve25519Key, into);
+            FfiConverterArrayBuffer.write(value.transportKey, into);
             FfiConverterArrayBuffer.write(value.oneTimeKey, into);
             FfiConverterArrayBuffer.write(value.nonce, into);
             FfiConverterOptionalBytes.write(value.serverAddr, into);
@@ -257,6 +301,7 @@ const FfiConverterTypeFfiPairingPayload = (() => {
         allocationSize(value: TypeName): number {
             return FfiConverterArrayBuffer.allocationSize(value.identityKey) +
              FfiConverterArrayBuffer.allocationSize(value.curve25519Key) +
+             FfiConverterArrayBuffer.allocationSize(value.transportKey) +
              FfiConverterArrayBuffer.allocationSize(value.oneTimeKey) +
              FfiConverterArrayBuffer.allocationSize(value.nonce) +
              FfiConverterOptionalBytes.allocationSize(value.serverAddr);
@@ -375,7 +420,7 @@ const FfiConverterTypeFfiError = (() => {
  */
 export interface FfiClientLike {
     
-    addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: string | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<bigint>;
+    addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, theirTransportKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: string | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<bigint>;
 /**
  * Completes a pairing exchange: `their` is the partner's
  * `pairing_payload()`, and `my_nonce` is the `nonce` from *this*
@@ -409,6 +454,12 @@ export interface FfiClientLike {
  */
     pairingPayload(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<FfiPairingPayload>;
     pushBackup(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
+/**
+ * Encrypts and delivers a message — via the recipient's Server
+ * mailbox if they have one, otherwise a direct Local P2P attempt (see
+ * `pm-core::Client::send`'s docs for the ~15-20s timeout and what a
+ * failure means for the caller).
+ */
     send(contactId: bigint, plaintext: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
 /**
  * Configures this device's own Server mailbox from a pasted/scanned
@@ -417,7 +468,8 @@ export interface FfiClientLike {
     setOwnServerAddr(addr: string, asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<void>;
 /**
  * Fetches and processes new messages from this client's own Server.
- * Returns how many were processed.
+ * Returns how many new *chat* messages were processed (delivery
+ * receipts update existing messages' status rather than counting).
  */
     sync(asyncOpts_?: { signal: AbortSignal }) /*throws*/: Promise<number>;
 }
@@ -556,14 +608,14 @@ private constructor(pointer: UniffiHandle) {
     
 
     
-    async addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: string | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<bigint> /*throws*/ {
+    async addContact(theirIdentityKey: ArrayBuffer, theirCurve25519Key: ArrayBuffer, theirOneTimeKey: ArrayBuffer, theirTransportKey: ArrayBuffer, displayName: string | undefined, theirServerAddr: string | undefined, pairSecret: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<bigint> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
         return await uniffiRustCallAsync(
             /*rustCaller:*/ uniffiCaller,
             /*rustFutureFunc:*/ () => {
                 return nativeModule().ubrn_uniffi_pm_ffi_fn_method_fficlient_add_contact(
-                    uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterArrayBuffer.lower(theirIdentityKey, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirCurve25519Key, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirOneTimeKey, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(displayName, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(theirServerAddr, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(pairSecret, nativeModule().rustbuffer_alloc)
+                    uniffiTypeFfiClientObjectFactory.clonePointer(this),FfiConverterArrayBuffer.lower(theirIdentityKey, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirCurve25519Key, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirOneTimeKey, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(theirTransportKey, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(displayName, nativeModule().rustbuffer_alloc),FfiConverterOptionalString.lower(theirServerAddr, nativeModule().rustbuffer_alloc),FfiConverterArrayBuffer.lower(pairSecret, nativeModule().rustbuffer_alloc)
                 );
             },
             /*pollFunc:*/ nativeModule().ubrn_ffi_pm_ffi_rust_future_poll_i64,
@@ -952,6 +1004,12 @@ private constructor(pointer: UniffiHandle) {
     }
     }
     
+/**
+ * Encrypts and delivers a message — via the recipient's Server
+ * mailbox if they have one, otherwise a direct Local P2P attempt (see
+ * `pm-core::Client::send`'s docs for the ~15-20s timeout and what a
+ * failure means for the caller).
+ */
     async send(contactId: bigint, plaintext: ArrayBuffer, asyncOpts_?: { signal: AbortSignal }): Promise<void> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
     try {
@@ -1012,7 +1070,8 @@ private constructor(pointer: UniffiHandle) {
     
 /**
  * Fetches and processes new messages from this client's own Server.
- * Returns how many were processed.
+ * Returns how many new *chat* messages were processed (delivery
+ * receipts update existing messages' status rather than counting).
  */
     async sync(asyncOpts_?: { signal: AbortSignal }): Promise<number> /*throws*/ {
     const __stack = uniffiIsDebug ? new Error().stack : undefined;
@@ -1119,6 +1178,9 @@ const FfiConverterTypeFfiClient = new FfiConverterObject(uniffiTypeFfiClientObje
 // FfiConverter for string | undefined
 const FfiConverterOptionalString = new FfiConverterOptional(FfiConverterString);
 
+// FfiConverter for FfiMessageStatus | undefined
+const FfiConverterOptionalTypeFfiMessageStatus = new FfiConverterOptional(FfiConverterTypeFfiMessageStatus);
+
 // FfiConverter for ArrayBuffer | undefined
 const FfiConverterOptionalBytes = new FfiConverterOptional(FfiConverterArrayBuffer);
 
@@ -1159,7 +1221,7 @@ function uniffiEnsureInitialized() {
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_constructor_fficlient_restore() !== 55085) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_constructor_fficlient_restore");
     }
-    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_add_contact() !== 36077) {
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_add_contact() !== 58408) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_add_contact");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_add_contact_from_payload() !== 56312) {
@@ -1195,13 +1257,13 @@ function uniffiEnsureInitialized() {
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_push_backup() !== 30420) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_push_backup");
     }
-    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_send() !== 39571) {
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_send() !== 21885) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_send");
     }
     if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr() !== 62009) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_set_own_server_addr");
     }
-    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_sync() !== 61603) {
+    if (nativeModule().ubrn_uniffi_pm_ffi_checksum_method_fficlient_sync() !== 52797) {
         throw new UniffiInternalError.ApiChecksumMismatch("uniffi_pm_ffi_checksum_method_fficlient_sync");
     }
 
@@ -1214,6 +1276,7 @@ export default Object.freeze({
     FfiConverterTypeFfiContact,
     FfiConverterTypeFfiError,
     FfiConverterTypeFfiMessage,
+    FfiConverterTypeFfiMessageStatus,
     FfiConverterTypeFfiPairingPayload,
   }
 });

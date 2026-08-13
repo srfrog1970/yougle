@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0003_pairing.sql"),
     include_str!("migrations/0004_pending_otk.sql"),
     include_str!("migrations/0005_own_server_addr.sql"),
+    include_str!("migrations/0006_transport_and_status.sql"),
 ];
 
 pub fn run(conn: &Connection) -> Result<()> {

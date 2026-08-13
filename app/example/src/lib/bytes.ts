@@ -25,8 +25,42 @@ export function textToBuffer(text: string): ArrayBuffer {
   return new TextEncoder().encode(text).buffer as ArrayBuffer;
 }
 
+// Not `new TextDecoder().decode(buf)` — Hermes (RN's JS engine) ships
+// `TextEncoder` but not `TextDecoder`, so that throws "Property
+// 'TextDecoder' doesn't exist" the moment any message actually renders.
+// Manual UTF-8 decode instead, encoding non-BMP code points as UTF-16
+// surrogate pairs the way `String.fromCharCode` requires.
 export function bufferToText(buf: ArrayBuffer): string {
-  return new TextDecoder().decode(buf);
+  const bytes = new Uint8Array(buf);
+  let result = '';
+  let i = 0;
+  while (i < bytes.length) {
+    const byte1 = bytes[i++];
+    if (byte1 < 0x80) {
+      result += String.fromCharCode(byte1);
+    } else if (byte1 < 0xe0) {
+      const byte2 = bytes[i++];
+      result += String.fromCharCode(((byte1 & 0x1f) << 6) | (byte2 & 0x3f));
+    } else if (byte1 < 0xf0) {
+      const byte2 = bytes[i++];
+      const byte3 = bytes[i++];
+      result += String.fromCharCode(
+        ((byte1 & 0x0f) << 12) | ((byte2 & 0x3f) << 6) | (byte3 & 0x3f)
+      );
+    } else {
+      const byte2 = bytes[i++];
+      const byte3 = bytes[i++];
+      const byte4 = bytes[i++];
+      const codepoint =
+        ((byte1 & 0x07) << 18) |
+        ((byte2 & 0x3f) << 12) |
+        ((byte3 & 0x3f) << 6) |
+        (byte4 & 0x3f);
+      const cp = codepoint - 0x10000;
+      result += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+    }
+  }
+  return result;
 }
 
 // react-native-fs reads/writes file contents as base64 strings, not raw
