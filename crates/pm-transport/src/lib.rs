@@ -6,12 +6,29 @@
 
 pub mod error;
 
+use base64::Engine;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr};
 use pm_proto::{NodeRequest, NodeResponse, MAX_MESSAGE_SIZE, NODE_ALPN};
 
 use error::Result;
 pub use error::TransportError;
+
+/// Encodes an `EndpointAddr` as a string a person can paste, type, or see
+/// in a QR code — `iroh-base 1.0.3` has no `Display`/`FromStr` for the full
+/// struct (only for its `EndpointId`/`TransportAddr` components), so this
+/// composes one from the existing bincode wire encoding.
+pub fn encode_endpoint_addr(addr: &EndpointAddr) -> Result<String> {
+    let bytes = bincode::serialize(addr).map_err(|e| TransportError::Codec(e.to_string()))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+pub fn decode_endpoint_addr(s: &str) -> Result<EndpointAddr> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s.trim())
+        .map_err(|e| TransportError::Codec(e.to_string()))?;
+    bincode::deserialize(&bytes).map_err(|e| TransportError::Codec(e.to_string()))
+}
 
 /// A client endpoint for dialing out to Server mailboxes. One instance is
 /// enough for a whole app session; a fresh QUIC connection is opened per
@@ -83,5 +100,25 @@ impl NodeClient {
 
     pub async fn close(&self) {
         self.endpoint.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn endpoint_addr_string_roundtrips() {
+        let client = NodeClient::new().await.unwrap();
+        let addr = client.addr();
+
+        let encoded = encode_endpoint_addr(&addr).unwrap();
+        let decoded = decode_endpoint_addr(&encoded).unwrap();
+        assert_eq!(decoded.id, addr.id);
+    }
+
+    #[test]
+    fn garbage_string_is_rejected_not_panicking() {
+        assert!(decode_endpoint_addr("not a valid encoded address").is_err());
     }
 }

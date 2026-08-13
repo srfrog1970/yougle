@@ -6,6 +6,13 @@
 //! reference) — so this wraps `Client` in a `tokio::sync::Mutex` and every
 //! exported method locks it, even the read-only ones, for one consistent
 //! access pattern.
+//!
+//! Server mailbox addresses cross this boundary as plain strings (see
+//! `pm_transport::encode_endpoint_addr`/`decode_endpoint_addr`) rather than
+//! raw bytes — they're meant to be pasted, displayed, and put in a QR code,
+//! so every method that takes or returns one (`restore`, `add_contact`,
+//! `own_server_addr`, `set_own_server_addr`) does the string conversion
+//! itself; the RN layer never handles raw address bytes.
 
 use std::path::PathBuf;
 
@@ -31,15 +38,24 @@ impl From<pm_crypto::CryptoError> for FfiError {
     }
 }
 
+impl From<pm_transport::TransportError> for FfiError {
+    fn from(e: pm_transport::TransportError) -> Self {
+        FfiError::Failed(e.to_string())
+    }
+}
+
 fn to_32(bytes: Vec<u8>, field: &str) -> Result<[u8; 32], FfiError> {
     bytes.try_into().map_err(|v: Vec<u8>| {
         FfiError::Failed(format!("{field} must be exactly 32 bytes, got {}", v.len()))
     })
 }
 
-fn deserialize_addr(bytes: &[u8]) -> Result<iroh::EndpointAddr, FfiError> {
-    bincode::deserialize(bytes)
-        .map_err(|e| FfiError::Failed(format!("invalid server address: {e}")))
+fn parse_addr(s: &str) -> Result<iroh::EndpointAddr, FfiError> {
+    pm_transport::decode_endpoint_addr(s).map_err(Into::into)
+}
+
+fn format_addr(addr: &iroh::EndpointAddr) -> Result<String, FfiError> {
+    pm_transport::encode_endpoint_addr(addr).map_err(Into::into)
 }
 
 #[derive(uniffi::Record)]
@@ -63,6 +79,68 @@ impl From<pm_store::StoredMessage> for FfiMessage {
     }
 }
 
+#[derive(uniffi::Record)]
+pub struct FfiContact {
+    pub id: i64,
+    pub identity_key: Vec<u8>,
+    pub curve25519_key: Vec<u8>,
+    pub display_name: Option<String>,
+    /// Whether this contact has a Server mailbox on file — until M6 (see
+    /// `pm-core`'s module-level scope note), sending only works when this
+    /// is true.
+    pub has_server: bool,
+}
+
+impl From<pm_store::ContactRecord> for FfiContact {
+    fn from(c: pm_store::ContactRecord) -> Self {
+        Self {
+            id: c.id,
+            identity_key: c.identity_key.to_vec(),
+            curve25519_key: c.curve25519_key.to_vec(),
+            display_name: c.display_name,
+            has_server: c.server_addr.is_some(),
+        }
+    }
+}
+
+/// One device's shareable pairing data — see `pm_core::PairingPayload`.
+/// Byte fields, not strings: this is meant to be packed as a whole (by the
+/// RN layer, into a QR code or paste code), not read field-by-field.
+#[derive(uniffi::Record)]
+pub struct FfiPairingPayload {
+    pub identity_key: Vec<u8>,
+    pub curve25519_key: Vec<u8>,
+    pub one_time_key: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub server_addr: Option<Vec<u8>>,
+}
+
+impl From<pm_core::PairingPayload> for FfiPairingPayload {
+    fn from(p: pm_core::PairingPayload) -> Self {
+        Self {
+            identity_key: p.identity_key.to_vec(),
+            curve25519_key: p.curve25519_key.to_vec(),
+            one_time_key: p.one_time_key.to_vec(),
+            nonce: p.nonce.to_vec(),
+            server_addr: p.server_addr,
+        }
+    }
+}
+
+impl TryFrom<FfiPairingPayload> for pm_core::PairingPayload {
+    type Error = FfiError;
+
+    fn try_from(p: FfiPairingPayload) -> Result<Self, FfiError> {
+        Ok(Self {
+            identity_key: to_32(p.identity_key, "identity_key")?,
+            curve25519_key: to_32(p.curve25519_key, "curve25519_key")?,
+            one_time_key: to_32(p.one_time_key, "one_time_key")?,
+            nonce: to_32(p.nonce, "nonce")?,
+            server_addr: p.server_addr,
+        })
+    }
+}
+
 /// The FFI-facing handle to a `pm-core` client. One instance per identity
 /// per app session.
 #[derive(uniffi::Object)]
@@ -74,19 +152,13 @@ pub struct FfiClient {
 impl FfiClient {
     /// Opens (creating if needed) a client backed by the encrypted store at
     /// `store_path`, for the identity the 24-word `seed_phrase` derives.
-    /// `server_addr` is this device's own Server mailbox address (bincode-
-    /// serialized `iroh::EndpointAddr` bytes, as produced by
-    /// `own_server_addr()` elsewhere on this same client), or `None` for a
-    /// Local-only client.
+    /// This device's own Server mailbox (if any) is remembered from a
+    /// previous `set_own_server_addr` call, not supplied here — see
+    /// `own_server_addr`.
     #[uniffi::constructor]
-    pub async fn open(
-        seed_phrase: String,
-        store_path: String,
-        server_addr: Option<Vec<u8>>,
-    ) -> Result<Self, FfiError> {
+    pub async fn open(seed_phrase: String, store_path: String) -> Result<Self, FfiError> {
         let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-        let addr = server_addr.map(|b| deserialize_addr(&b)).transpose()?;
-        let client = pm_core::Client::open(&seed, &PathBuf::from(store_path), addr).await?;
+        let client = pm_core::Client::open(&seed, &PathBuf::from(store_path)).await?;
         Ok(Self {
             inner: Mutex::new(client),
         })
@@ -99,11 +171,29 @@ impl FfiClient {
     pub async fn restore(
         seed_phrase: String,
         store_path: String,
-        server_addr: Vec<u8>,
+        server_addr: String,
     ) -> Result<Self, FfiError> {
         let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
-        let addr = deserialize_addr(&server_addr)?;
+        let addr = parse_addr(&server_addr)?;
         let client = pm_core::Client::restore(&seed, &PathBuf::from(store_path), addr).await?;
+        Ok(Self {
+            inner: Mutex::new(client),
+        })
+    }
+
+    /// Restores identity, contacts, and message history from a manually
+    /// supplied encrypted backup file's bytes (as produced by
+    /// `export_backup`), rather than fetching one from a Server.
+    #[uniffi::constructor]
+    pub async fn import_backup(
+        seed_phrase: String,
+        store_path: String,
+        backup_bytes: Vec<u8>,
+    ) -> Result<Self, FfiError> {
+        let seed = pm_crypto::Seed::from_phrase(&seed_phrase)?;
+        let client =
+            pm_core::Client::import_backup(&seed, &PathBuf::from(store_path), &backup_bytes)
+                .await?;
         Ok(Self {
             inner: Mutex::new(client),
         })
@@ -124,6 +214,61 @@ impl FfiClient {
         Ok(inner.generate_one_time_key()?.to_vec())
     }
 
+    pub async fn list_contacts(&self) -> Result<Vec<FfiContact>, FfiError> {
+        let inner = self.inner.lock().await;
+        Ok(inner.list_contacts()?.into_iter().map(Into::into).collect())
+    }
+
+    /// This device's own Server mailbox address, if it has configured one.
+    pub async fn own_server_addr(&self) -> Result<Option<String>, FfiError> {
+        let inner = self.inner.lock().await;
+        inner
+            .own_server_addr()
+            .map(|addr| format_addr(&addr))
+            .transpose()
+    }
+
+    /// Configures this device's own Server mailbox from a pasted/scanned
+    /// address string.
+    pub async fn set_own_server_addr(&self, addr: String) -> Result<(), FfiError> {
+        let addr = parse_addr(&addr)?;
+        let mut inner = self.inner.lock().await;
+        inner.set_own_server_addr(addr)?;
+        Ok(())
+    }
+
+    pub async fn clear_own_server_addr(&self) -> Result<(), FfiError> {
+        let mut inner = self.inner.lock().await;
+        inner.clear_own_server_addr()?;
+        Ok(())
+    }
+
+    /// Produces this device's shareable pairing data. Hold onto the
+    /// returned `nonce` — it's needed again, unchanged, when this same
+    /// pairing attempt is completed via `add_contact_from_payload`.
+    pub async fn pairing_payload(&self) -> Result<FfiPairingPayload, FfiError> {
+        let mut inner = self.inner.lock().await;
+        Ok(inner.pairing_payload()?.into())
+    }
+
+    /// Completes a pairing exchange: `their` is the partner's
+    /// `pairing_payload()`, and `my_nonce` is the `nonce` from *this*
+    /// device's own `pairing_payload()` call for the same attempt.
+    pub async fn add_contact_from_payload(
+        &self,
+        their: FfiPairingPayload,
+        my_nonce: Vec<u8>,
+        display_name: Option<String>,
+    ) -> Result<i64, FfiError> {
+        let their: pm_core::PairingPayload = their.try_into()?;
+        let my_nonce = to_32(my_nonce, "my_nonce")?;
+
+        let mut inner = self.inner.lock().await;
+        Ok(inner
+            .add_contact_from_payload(their, my_nonce, display_name.as_deref())
+            .await?)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn add_contact(
         &self,
@@ -131,16 +276,14 @@ impl FfiClient {
         their_curve25519_key: Vec<u8>,
         their_one_time_key: Vec<u8>,
         display_name: Option<String>,
-        their_server_addr: Option<Vec<u8>>,
+        their_server_addr: Option<String>,
         pair_secret: Vec<u8>,
     ) -> Result<i64, FfiError> {
         let their_identity_key = to_32(their_identity_key, "their_identity_key")?;
         let their_curve25519_key = to_32(their_curve25519_key, "their_curve25519_key")?;
         let their_one_time_key = to_32(their_one_time_key, "their_one_time_key")?;
         let pair_secret = to_32(pair_secret, "pair_secret")?;
-        let their_server_addr = their_server_addr
-            .map(|b| deserialize_addr(&b))
-            .transpose()?;
+        let their_server_addr = their_server_addr.map(|s| parse_addr(&s)).transpose()?;
 
         let mut inner = self.inner.lock().await;
         let id = inner
@@ -183,6 +326,21 @@ impl FfiClient {
         inner.push_backup().await?;
         Ok(())
     }
+
+    /// Assembles and encrypts the same backup bundle as `push_backup`, but
+    /// returns the ciphertext directly instead of pushing it to a Server —
+    /// works with no Server mailbox configured at all.
+    pub async fn export_backup(&self) -> Result<Vec<u8>, FfiError> {
+        let inner = self.inner.lock().await;
+        Ok(inner.export_backup()?)
+    }
+}
+
+/// Generates a fresh 24-word BIP39 recovery phrase. No `Client` exists yet
+/// at onboarding time, so this is a free function rather than a method.
+#[uniffi::export]
+pub fn generate_seed_phrase() -> String {
+    pm_crypto::Seed::generate().1.to_string()
 }
 
 #[cfg(test)]
@@ -193,5 +351,11 @@ mod tests {
     async fn to_32_rejects_wrong_length() {
         assert!(to_32(vec![0u8; 31], "x").is_err());
         assert!(to_32(vec![0u8; 32], "x").is_ok());
+    }
+
+    #[test]
+    fn generate_seed_phrase_returns_24_words() {
+        let phrase = generate_seed_phrase();
+        assert_eq!(phrase.split_whitespace().count(), 24);
     }
 }

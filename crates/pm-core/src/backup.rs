@@ -25,12 +25,17 @@ pub struct BackupContact {
 pub struct BackupBundle {
     pub account_pickle: Vec<u8>,
     pub contacts: Vec<BackupContact>,
+    /// This device's own Server mailbox address at backup time, if it had
+    /// one — so restoring on a new device remembers it too, rather than
+    /// requiring it to be re-entered (see `pm-core`'s M5 `Client` changes).
+    pub own_server_addr: Option<Vec<u8>>,
 }
 
 pub fn assemble(store: &pm_store::Store) -> Result<BackupBundle> {
     let account_pickle = store
         .load_account_pickle()?
         .ok_or_else(|| CoreError::CorruptBackup("no account pickle to back up".to_string()))?;
+    let own_server_addr = store.get_own_server_addr()?;
 
     let mut contacts = Vec::new();
     for c in store.list_contacts()? {
@@ -52,12 +57,14 @@ pub fn assemble(store: &pm_store::Store) -> Result<BackupBundle> {
     Ok(BackupBundle {
         account_pickle,
         contacts,
+        own_server_addr,
     })
 }
 
 /// Restores a bundle into a fresh (empty) store.
 pub fn restore_into(store: &pm_store::Store, bundle: &BackupBundle) -> Result<()> {
     store.save_account_pickle(&bundle.account_pickle)?;
+    store.set_own_server_addr(bundle.own_server_addr.as_deref())?;
 
     for c in &bundle.contacts {
         let contact_id = store.upsert_contact(

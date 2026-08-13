@@ -28,20 +28,16 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
     let bob_server_addr = bob_router.endpoint().addr();
 
     // --- Alice and Bob's clients ---
-    let mut alice = Client::open(
-        &alice_seed,
-        &dir.path().join("alice.sqlite"),
-        Some(alice_server_addr.clone()),
-    )
-    .await
-    .unwrap();
-    let mut bob = Client::open(
-        &bob_seed,
-        &dir.path().join("bob-original.sqlite"),
-        Some(bob_server_addr.clone()),
-    )
-    .await
-    .unwrap();
+    let mut alice = Client::open(&alice_seed, &dir.path().join("alice.sqlite"))
+        .await
+        .unwrap();
+    alice
+        .set_own_server_addr(alice_server_addr.clone())
+        .unwrap();
+    let mut bob = Client::open(&bob_seed, &dir.path().join("bob-original.sqlite"))
+        .await
+        .unwrap();
+    bob.set_own_server_addr(bob_server_addr.clone()).unwrap();
 
     // --- Mutual pairing stand-in: each generates a one-time key for the
     // other and calls add_contact, exactly as a real QR exchange would feed

@@ -5,7 +5,9 @@
 pub mod backup;
 pub mod client;
 pub mod error;
+pub mod pairing;
 
 pub use backup::{BackupBundle, BackupContact};
 pub use client::Client;
 pub use error::{CoreError, Result};
+pub use pairing::{compute_pair_secret, PairingPayload};

@@ -6,9 +6,10 @@
 //! here. Direct Local (phone-to-phone) delivery already works at the
 //! `pm-transport`/`pm-crypto` level (proven in the M1/M2 tests) but isn't
 //! integrated into `Client` yet — that needs `Client` to also run its own
-//! accept loop while foregrounded, which is deferred to M4/M5 when the app
-//! actually needs both modes. `send`/`sync` here require a contact/self to
-//! have a known Server address.
+//! accept loop while foregrounded, which is deferred to M6 (see
+//! `docs/PRD.md`'s three delivery paths — only the Server-mailbox one is
+//! implemented). `send`/`sync` here require a contact/self to have a known
+//! Server address.
 
 use std::path::Path;
 
@@ -23,6 +24,7 @@ use pm_transport::NodeClient;
 
 use crate::backup::{self, BackupBundle};
 use crate::error::{CoreError, Result};
+use crate::pairing::{compute_pair_secret, PairingPayload};
 
 /// How many upcoming write-auth slots to pre-register at once. A real
 /// deployment would replenish this in the background as it runs low;
@@ -41,15 +43,13 @@ pub struct Client {
 
 impl Client {
     /// Opens (creating if needed) a client backed by the store at
-    /// `store_path`, for the identity derived from `seed`. `server_addr` is
-    /// this device's own Server mailbox, if it has one — re-supplied by the
-    /// caller each session, since there's no DHT lookup in this build (see
-    /// `docs/PRD.md`'s Open Items).
-    pub async fn open(
-        seed: &Seed,
-        store_path: &Path,
-        server_addr: Option<EndpointAddr>,
-    ) -> Result<Self> {
+    /// `store_path`, for the identity derived from `seed`. This device's own
+    /// Server mailbox address, if any, is loaded from the store itself
+    /// (`None` on a fresh store) — see `own_server_addr`/`set_own_server_addr`
+    /// to configure it; there's no DHT lookup in this build (see
+    /// `docs/PRD.md`'s Open Items), so it's this device's own responsibility
+    /// to remember, not looked up externally.
+    pub async fn open(seed: &Seed, store_path: &Path) -> Result<Self> {
         let identity = Identity::derive(seed);
         let store = Store::open(store_path, &identity.mailbox_key)?;
 
@@ -62,6 +62,7 @@ impl Client {
             }
         };
 
+        let server_addr = load_own_server_addr(&store)?;
         let node_client = NodeClient::new().await?;
 
         Ok(Self {
@@ -71,6 +72,34 @@ impl Client {
             node_client,
             server_addr,
         })
+    }
+
+    /// This device's own Server mailbox address, if it has configured one.
+    pub fn own_server_addr(&self) -> Option<EndpointAddr> {
+        self.server_addr.clone()
+    }
+
+    /// Configures this device's own Server mailbox. Persisted immediately,
+    /// so it's remembered across app restarts without needing to be
+    /// re-entered (see `open`).
+    pub fn set_own_server_addr(&mut self, addr: EndpointAddr) -> Result<()> {
+        let bytes =
+            bincode::serialize(&addr).map_err(|e| CoreError::CorruptBackup(e.to_string()))?;
+        self.store.set_own_server_addr(Some(&bytes))?;
+        self.server_addr = Some(addr);
+        Ok(())
+    }
+
+    /// Removes this device's own Server mailbox configuration, reverting to
+    /// Local-only.
+    pub fn clear_own_server_addr(&mut self) -> Result<()> {
+        self.store.set_own_server_addr(None)?;
+        self.server_addr = None;
+        Ok(())
+    }
+
+    pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
+        Ok(self.store.list_contacts()?)
     }
 
     pub fn identity_key(&self) -> [u8; 32] {
@@ -140,6 +169,62 @@ impl Client {
         }
 
         Ok(contact_id)
+    }
+
+    /// Produces this device's shareable pairing data — public keys, a fresh
+    /// one-time key, and a fresh random nonce — for a partner to scan/paste
+    /// (see `PairingPayload`). Hold onto the returned nonce: it's needed
+    /// again, unchanged, when this same pairing attempt is completed via
+    /// `add_contact_from_payload`.
+    pub fn pairing_payload(&mut self) -> Result<PairingPayload> {
+        let one_time_key = self.generate_one_time_key()?;
+        let mut nonce = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let server_addr = self
+            .server_addr
+            .as_ref()
+            .map(bincode::serialize)
+            .transpose()
+            .map_err(|e| CoreError::CorruptBackup(e.to_string()))?;
+
+        Ok(PairingPayload {
+            identity_key: self.identity_key(),
+            curve25519_key: self.curve25519_key(),
+            one_time_key,
+            nonce,
+            server_addr,
+        })
+    }
+
+    /// Completes a pairing exchange: `their` is the partner's
+    /// `pairing_payload()`, and `my_nonce` is the nonce from *this*
+    /// device's own `pairing_payload()` call for the same attempt (not
+    /// re-generated here) — combining the two nonces via
+    /// `compute_pair_secret` is what lets both sides land on the identical
+    /// `pair_secret` regardless of who calls this first.
+    pub async fn add_contact_from_payload(
+        &mut self,
+        their: PairingPayload,
+        my_nonce: [u8; 32],
+        display_name: Option<&str>,
+    ) -> Result<i64> {
+        let pair_secret = compute_pair_secret(my_nonce, their.nonce)?;
+        let their_server_addr = their
+            .server_addr
+            .as_deref()
+            .map(bincode::deserialize)
+            .transpose()
+            .map_err(|e: bincode::Error| CoreError::CorruptBackup(e.to_string()))?;
+
+        self.add_contact(
+            their.identity_key,
+            their.curve25519_key,
+            their.one_time_key,
+            display_name,
+            their_server_addr,
+            pair_secret,
+        )
+        .await
     }
 
     async fn register_slot(&self, node_addr: EndpointAddr, slot_hash: [u8; 32]) -> Result<()> {
@@ -368,6 +453,19 @@ impl Client {
         expect_ok(response)
     }
 
+    /// Assembles and encrypts the same backup bundle as `push_backup`, but
+    /// returns the ciphertext directly instead of pushing it to a Server —
+    /// works with no Server mailbox configured at all, for the manual
+    /// export/import path (`docs/PRD.md` §7's "Backup export screen").
+    pub fn export_backup(&self) -> Result<Vec<u8>> {
+        let bundle = backup::assemble(&self.store)?;
+        let plaintext = backup::serialize(&bundle);
+        Ok(pm_crypto::encrypt_backup(
+            &self.identity.backup_key,
+            &plaintext,
+        ))
+    }
+
     /// Restores identity (always possible from the seed alone) plus
     /// contacts and message-adjacent session state (only possible here by
     /// fetching a previously pushed backup from `server_addr`, which the
@@ -399,6 +497,14 @@ impl Client {
 
         let store = Store::open(store_path, &identity.mailbox_key)?;
         backup::restore_into(&store, &bundle)?;
+        // The address just used to fetch this backup is, by construction,
+        // this device's own Server — persist it so a later plain `open()`
+        // (not `restore()`) remembers it too, overriding whatever the
+        // bundle itself happened to record (should coincide, but this is
+        // the address that's actually known-reachable right now).
+        let addr_bytes = bincode::serialize(&server_addr)
+            .map_err(|e| CoreError::CorruptBackup(e.to_string()))?;
+        store.set_own_server_addr(Some(&addr_bytes))?;
 
         let account = MyAccount::from_pickle(&bundle.account_pickle)?;
 
@@ -410,6 +516,46 @@ impl Client {
             server_addr: Some(server_addr),
         })
     }
+
+    /// Restores identity plus contacts/message history from a manually
+    /// supplied encrypted backup (as produced by `export_backup`), rather
+    /// than fetching one from a Server — works with no Server mailbox at
+    /// all. Opens a fresh store at `store_path`, which must not already
+    /// exist.
+    pub async fn import_backup(
+        seed: &Seed,
+        store_path: &Path,
+        backup_bytes: &[u8],
+    ) -> Result<Self> {
+        let identity = Identity::derive(seed);
+        let plaintext = pm_crypto::decrypt_backup(&identity.backup_key, backup_bytes)?;
+        let bundle: BackupBundle = backup::deserialize(&plaintext)?;
+
+        let store = Store::open(store_path, &identity.mailbox_key)?;
+        backup::restore_into(&store, &bundle)?;
+
+        let account = MyAccount::from_pickle(&bundle.account_pickle)?;
+        let server_addr = load_own_server_addr(&store)?;
+        let node_client = NodeClient::new().await?;
+
+        Ok(Self {
+            identity,
+            store,
+            account,
+            node_client,
+            server_addr,
+        })
+    }
+}
+
+/// Shared by `open` and `import_backup`: decodes this device's own Server
+/// mailbox address from the store, if one is set.
+fn load_own_server_addr(store: &Store) -> Result<Option<EndpointAddr>> {
+    store
+        .get_own_server_addr()?
+        .map(|bytes| bincode::deserialize(&bytes))
+        .transpose()
+        .map_err(|e: bincode::Error| CoreError::CorruptBackup(e.to_string()))
 }
 
 fn derive_auth(pair_secret: &[u8; 32], n: u64) -> Result<[u8; 32]> {

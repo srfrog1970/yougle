@@ -414,6 +414,36 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// This device's own Server mailbox address, if it has one — an opaque,
+    /// serialized address `pm-core` supplies and interprets, same
+    /// convention as `set_contact_server_addr`.
+    pub fn get_own_server_addr(&self) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT own_server_addr FROM account WHERE id = 0",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|opt| opt.flatten())
+            .map_err(Into::into)
+    }
+
+    pub fn set_own_server_addr(&self, addr: Option<&[u8]>) -> Result<()> {
+        // The account row might not exist yet if no account pickle has been
+        // saved; ensure it does, then set the address (mirrors
+        // `set_last_synced_blob_id`).
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO account (id, pickle, updated_at, own_server_addr)
+             VALUES (0, x'', unixepoch(), ?1)
+             ON CONFLICT (id) DO UPDATE SET own_server_addr = excluded.own_server_addr",
+            params![addr],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -606,6 +636,36 @@ mod tests {
         assert_eq!(
             store.load_account_pickle().unwrap(),
             Some(b"account-bytes".to_vec())
+        );
+    }
+
+    #[test]
+    fn own_server_addr_starts_unset_then_roundtrips_and_clears_without_clobbering_pickle() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        assert_eq!(store.get_own_server_addr().unwrap(), None);
+
+        store
+            .set_own_server_addr(Some(b"fake-own-endpoint-addr"))
+            .unwrap();
+        assert_eq!(
+            store.get_own_server_addr().unwrap(),
+            Some(b"fake-own-endpoint-addr".to_vec())
+        );
+
+        // Must not clobber a previously-saved account pickle (same
+        // upsert-onto-the-singleton-row pattern as last_synced_blob_id).
+        store.save_account_pickle(b"account-bytes").unwrap();
+        store.set_own_server_addr(Some(b"new-addr")).unwrap();
+        assert_eq!(
+            store.load_account_pickle().unwrap(),
+            Some(b"account-bytes".to_vec())
+        );
+
+        store.set_own_server_addr(None).unwrap();
+        assert_eq!(
+            store.get_own_server_addr().unwrap(),
+            None,
+            "clearing back to None must work, not just leave the old value"
         );
     }
 

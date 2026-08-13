@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 iroh = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 bincode = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

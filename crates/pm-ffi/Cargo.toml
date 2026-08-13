@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 pm-core = { path = "../pm-core" }
 pm-crypto = { path = "../pm-crypto" }
 pm-store = { path = "../pm-store" }
+pm-transport = { path = "../pm-transport" }
 uniffi = { version = "0.29", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 bincode = "1"
