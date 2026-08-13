@@ -1,13 +1,13 @@
 # app
 
-React Native turbo-module library wrapping `pm-ffi` — the actual conversation-list/chat/QR-pairing/onboarding UI itself is still M5, not built yet. This is the bridge layer plus a bundled example app that serves as the debug screen for exercising it.
+React Native turbo-module library wrapping `pm-ffi`, plus the actual app UI (`example/`) — onboarding, conversation list, chat, QR/paste-code pairing, mailbox management, recovery-phrase view, and backup export/import, all wired to the real Rust core.
 
-Status: M4 in progress. Scaffolded via `create-react-native-library` (turbo-module, C++/Kotlin/Obj-C native layer, vanilla example app) and wired to `uniffi-bindgen-react-native` (`ubrn`) pointed at the local `../crates/pm-ffi` crate — no git checkout needed, `ubrn.config.yaml` uses the `directory`/`manifestPath` local-crate form.
+Status: M5 complete. Scaffolded via `create-react-native-library` (turbo-module, C++/Kotlin/Obj-C native layer) and wired to `uniffi-bindgen-react-native` (`ubrn`) pointed at the local `../crates/pm-ffi` crate — no git checkout needed, `ubrn.config.yaml` uses the `directory`/`manifestPath` local-crate form. Verified by actually running the app end to end on a headless Android emulator (real identity creation, real SQLCipher DB, real Keychain, real Server-mailbox round trip against a live `pm-node`, real QR rendering, real backup export to the OS share sheet) — not just a build check. Local-to-local live delivery and a "delivered" receipt aren't wired into `pm-core` yet (M6), so sending only works when the recipient has a Server mailbox — see `pm-core`'s module docs.
 
 ## What's here
 
 - `src/`, `android/`, `ios/`, `*.podspec` — the turbo-module library scaffold. `android/`, `ios/`, `cpp/` (once generated) and `src/generated/`, `src/Native*`, `src/index.*ts*` are produced by `ubrn` and are not meant to be hand-edited — see `ubrn:clean` below.
-- `example/` — the bundled vanilla RN app. This is the "debug screen" M4's exit criteria refers to.
+- `example/` — the actual app. `example/src/App.tsx` is the entry point; `example/src/screens/` has one file per PRD §7 screen, `example/src/lib/client.tsx` holds the `FfiClient` React context.
 - `ubrn.config.yaml` — points `ubrn` at `pm-ffi`.
 
 ## Environment note
@@ -31,6 +31,34 @@ What *is* verified end to end: `pm-ffi` compiles and passes its tests on the hos
 `uniffi-bindgen-react-native@0.31.0-3` (the latest published version) generates an Android `CMakeLists.txt` that resolves its own C++ headers via `node -p "require.resolve('uniffi-bindgen-react-native/package.json')"` at CMake-configure time. That package's own `exports` field doesn't declare `./package.json` as an allowed subpath, so under Node's strict ESM `exports` resolution (confirmed with Node 24) that `require.resolve` call throws `ERR_PACKAGE_PATH_NOT_EXPORTED`, `execute_process` fails, and the resulting CMake variable is silently empty — the actual compile then fails with `fatal error: 'UniffiCallInvoker.h' file not found` (and a giveaway literal `-I/cpp/includes` in the compiler invocation, since the CMake path template collapsed to nothing). This isn't fixable by hand-editing `android/CMakeLists.txt` since `ubrn build android --and-generate` regenerates it every time.
 
 Fixed via `patch-package` (`patches/uniffi-bindgen-react-native+0.31.0-3.patch`), which adds `"./package.json": "./package.json"` to that package's `exports` map so the resolve call succeeds. Applied automatically via `npm install`'s `postinstall` hook — no manual step needed. Worth re-checking if `uniffi-bindgen-react-native` ships a version past `0.31.0-3` (the patch can likely be dropped then).
+
+## Other issues that only show up at runtime, not at build time
+
+Found running the real app on-device, not from `cargo test`/`tsc`/`gradle build` — worth knowing about if this stack is touched again:
+
+- **`uniffi` version must exactly match `uniffi-bindgen-react-native`'s own pin.** `pm-ffi`'s `Cargo.toml` pins `uniffi = "=0.31.0"` to match `uniffi-bindgen-react-native`'s own `Cargo.toml`. A mismatch compiles and tests fine on both sides (the JS and Rust each just embed their own scaffolding-version number) and only fails the moment the app actually calls in, as `Incompatible versions of uniffi were used to build the JS (N) from the Rust (M)`.
+- **Every `pm-ffi` async method body is wrapped in `async_compat::Compat`** (see `compat()` in `crates/pm-ffi/src/lib.rs`). uniffi's async bridge polls exported futures from whatever thread the foreign (Kotlin/JS) side drives them from, not necessarily one with a Tokio runtime entered — `iroh` needs one. `#[tokio::test]` always provides one, so this is invisible in Rust-only testing and fails at runtime as `there is no reactor running, must be called from the context of a Tokio 1.x runtime`.
+- **`example/metro.config.js` needs `watchFolders`/`resolver.extraNodeModules`** pointing `yougle-native` at `..` — Metro has no built-in notion of a local, unpublished sibling package, so without this every screen fails at launch with `Cannot find module 'yougle-native'`.
+- **`app/package.json` needs a `"react-native-builder-bob": { "source": "src" }` block** — without it, `example/babel.config.js`'s call into `react-native-builder-bob/babel-config` throws `Couldn't determine the source directory` and the JS bundle never transforms.
+- **The debug APK must be built for the ABI the emulator actually runs.** `gradlew assembleDebug -PreactNativeArchitectures=arm64-v8a` on an `x86_64` AVD installs fine but crashes on launch (`SoLoaderDSONotFoundError: couldn't find DSO to load: libreactnative.so`) since only arm64 native libs got packaged. Match the flag to the AVD's ABI (`ubrn build android` itself always cross-compiles all four ABIs regardless of this flag — it only controls what Gradle packages into the APK).
+
+## Headless emulator verification (WSL2)
+
+No physical device or GUI needed. `/dev/kvm` is present in WSL2 but the invoking user isn't in the `kvm` group by default — `sudo gpasswd -a $USER kvm` then either `sg kvm -c '<command>'` (no restart needed) or a fresh login:
+
+```
+sdkmanager "emulator" "system-images;android-34;google_apis;x86_64"
+avdmanager create avd -n yougle -k "system-images;android-34;google_apis;x86_64" -d pixel_6
+sg kvm -c "emulator -avd yougle -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect &"
+adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 1; done'
+
+adb install -r example/android/app/build/outputs/apk/debug/app-debug.apk
+adb reverse tcp:8081 tcp:8081        # example app is a debug build; needs Metro
+npx react-native start               # from example/, separately
+adb shell am start -n youglenative.example/.MainActivity
+adb exec-out screencap -p > screen.png   # visual inspection
+adb logcat -d | grep -iE "ReactNativeJS|FATAL"
+```
 
 ## Setup
 
