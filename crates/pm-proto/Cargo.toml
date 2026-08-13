@@ -1,0 +1,18 @@
+[package]
+name = "pm-proto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wire envelopes, chain derivation, and versioning shared between the Yougle client core and the Server mailbox binary."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+hkdf = "0.12"
+sha2 = "0.10"
+bincode = "1"
+
+[dev-dependencies]
+proptest = "1"
+hex = "0.4"

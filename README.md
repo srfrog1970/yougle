@@ -4,7 +4,11 @@ A privacy-focused, decentralized text messenger. No accounts, no phone numbers, 
 
 Every user gets an automatic, client-side **Local** mailbox for direct, live delivery. Anyone can optionally run their own self-hosted **Server** mailbox for durable, asynchronous delivery — always owned by the person running it, never a shared community operator.
 
-Status: **pre-code.** The product requirements are locked (see [`docs/PRD.md`](docs/PRD.md)); implementation has not started.
+Status: **M0 in progress.** The product requirements are locked (see [`docs/PRD.md`](docs/PRD.md)). `pm-proto` (envelopes, padding, chain derivation) has an initial implementation with property tests and a pinned test vector; everything else is not yet started.
+
+```
+cargo test    # run all workspace tests
+```
 
 ## Repository layout
 
