@@ -6,6 +6,19 @@ run it: Docker (`Dockerfile` + `docker-compose.yml`) or directly as a
 systemd service (`pm-node.service`). Pick whichever fits the machine
 you're running it on (a Raspberry Pi, a small VPS, a home server, etc.).
 
+Status: both paths verified for real, not just written and assumed
+correct — built and ran via `docker compose` (real relay connection, a
+printed pasteable address, `restart: unless-stopped` correctly leaving an
+explicitly-stopped container stopped) and installed and ran as an actual
+systemd unit (`enabled`+`active`, `DynamicUser=yes` confirmed running as
+an unprivileged `pm-node` user rather than root, `Restart=always`
+confirmed set). Not yet verified: an actual in-process crash triggering
+systemd's/Docker's auto-restart (the minimal runtime image has no
+`kill`/`pkill` to trigger one from inside; the policies themselves are
+confirmed correctly configured), and real connectivity between two
+genuinely separate home networks/NATs rather than one host reaching the
+public relay.
+
 ## 1. Get your keys from the app
 
 `pm-node` needs two values that identify it as *your* Server, both
