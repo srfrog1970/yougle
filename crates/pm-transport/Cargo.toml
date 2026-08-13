@@ -1,0 +1,17 @@
+[package]
+name = "pm-transport"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "iroh endpoint management and the client side of the pm-node mailbox wire protocol."
+
+[dependencies]
+pm-proto = { path = "../pm-proto" }
+thiserror = { workspace = true }
+iroh = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+bincode = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
