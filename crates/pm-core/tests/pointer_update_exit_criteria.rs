@@ -70,6 +70,7 @@ async fn pointer_update_propagates_and_a_later_change_supersedes_an_earlier_one(
     let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
+        None,
     )
     .await
     .unwrap();

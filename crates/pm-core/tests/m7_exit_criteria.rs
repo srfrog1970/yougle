@@ -42,6 +42,7 @@ async fn alice_with_server_and_a_freshly_unreachable_bob(
     let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
+        None,
     )
     .await
     .unwrap();

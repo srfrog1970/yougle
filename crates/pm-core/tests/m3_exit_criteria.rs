@@ -23,12 +23,17 @@ async fn restore_from_seed_phrase_resumes_a_conversation() {
     let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
+        None,
     )
     .await
     .unwrap();
-    let bob_node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-        .await
-        .unwrap();
+    let bob_node = pm_node::spawn(
+        bob_identity.mailbox_key,
+        bob_identity.server_transport_key,
+        None,
+    )
+    .await
+    .unwrap();
     alice_node.endpoint().online().await;
     bob_node.endpoint().online().await;
     let alice_server_addr = alice_node.endpoint().addr();

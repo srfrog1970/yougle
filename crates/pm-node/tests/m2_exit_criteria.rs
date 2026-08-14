@@ -28,9 +28,13 @@ async fn two_clients_exchange_a_message_through_the_node() {
     let bob_identity = Identity::derive(&bob_seed);
 
     // --- Start Bob's node ---
-    let node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-        .await
-        .expect("node starts");
+    let node = pm_node::spawn(
+        bob_identity.mailbox_key,
+        bob_identity.server_transport_key,
+        None,
+    )
+    .await
+    .expect("node starts");
     node.endpoint().online().await;
     let node_addr = node.endpoint().addr();
 

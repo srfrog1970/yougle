@@ -48,7 +48,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_into()
         .map_err(|_| "PM_NODE_TRANSPORT_KEY must decode to exactly 32 bytes")?;
 
-    let node = spawn(mailbox_key, transport_key).await?;
+    let data_dir = match std::env::var("PM_NODE_DATA_DIR") {
+        Ok(path) => Some(std::path::PathBuf::from(path)),
+        Err(_) => {
+            eprintln!(
+                "PM_NODE_DATA_DIR not set — this node will run in-memory only, and all mailbox \
+                 data will be lost on restart. Set it to a writable directory path to persist \
+                 storage across restarts."
+            );
+            None
+        }
+    };
+
+    let node = spawn(mailbox_key, transport_key, data_dir.as_deref()).await?;
     node.endpoint().online().await;
     let addr = node.endpoint().addr();
     println!("pm-node listening. Endpoint address (paste this into the app's Server mailbox setup screen):");

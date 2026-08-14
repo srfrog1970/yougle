@@ -1,13 +1,17 @@
 //! `pm-node`: the Server mailbox binary's library half. Single-tenant,
-//! self-hosted — see `docs/PRD.md` v2.0. In-memory storage only, per M2's
-//! scope; persistence is a later milestone. M7 adds an outbound
-//! retry-delivery sweep (`docs/PRD.md` Flow 3's third case) on top of the
-//! same accept-side endpoint.
+//! self-hosted — see `docs/PRD.md` v2.0. Mailbox storage and the M7
+//! retry-delivery queue are SQLCipher-encrypted at rest when `spawn` is
+//! given a `data_dir`, in-memory otherwise (see `db.rs`). M7 adds an
+//! outbound retry-delivery sweep (`docs/PRD.md` Flow 3's third case) on top
+//! of the same accept-side endpoint.
 
+mod db;
 pub mod handler;
+mod migrations;
 pub mod retry_queue;
 pub mod store;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +31,8 @@ pub use store::MailboxStore;
 pub enum NodeError {
     #[error("endpoint setup failed: {0}")]
     Endpoint(String),
+    #[error("storage setup failed: {0}")]
+    Storage(String),
 }
 
 /// How often the M7 retry-delivery sweep wakes to check for due entries.
@@ -73,16 +79,18 @@ impl RunningNode {
 /// `app/README.md`'s note on why that matters for M6's Local-delivery
 /// path, which needs to dial known-in-advance identities, and for the
 /// "paste this address once" Server-mailbox setup flow M5 already
-/// shipped), registers the mailbox protocol handler for
-/// [`pm_proto::NODE_ALPN`], starts the M7 retry-delivery sweep around a
-/// clone of that same endpoint (reusing it rather than standing up a
-/// second, differently-identified one just for outbound dialing — the
+/// shipped), opens mailbox storage (persistent at `data_dir` if given,
+/// in-memory if `None` — see `db.rs`), registers the mailbox protocol
+/// handler for [`pm_proto::NODE_ALPN`], starts the M7 retry-delivery sweep
+/// around a clone of that same endpoint (reusing it rather than standing
+/// up a second, differently-identified one just for outbound dialing — the
 /// same pattern `pm-core::Client` already uses to share one endpoint
 /// between its own inbound `Router` and outbound `NodeClient`), and
 /// returns the resulting [`RunningNode`].
 pub async fn spawn(
     mailbox_key: [u8; 32],
     transport_key: [u8; 32],
+    data_dir: Option<&Path>,
 ) -> Result<RunningNode, NodeError> {
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(SecretKey::from_bytes(&transport_key))
@@ -90,8 +98,9 @@ pub async fn spawn(
         .await
         .map_err(|e| NodeError::Endpoint(e.to_string()))?;
 
-    let store = Arc::new(MailboxStore::new());
-    let retry_queue = Arc::new(RetryQueue::new());
+    let conn = db::open(data_dir, mailbox_key).map_err(|e| NodeError::Storage(e.to_string()))?;
+    let store = Arc::new(MailboxStore::new(conn.clone()));
+    let retry_queue = Arc::new(RetryQueue::new(conn));
     let handler = MailboxHandler::new(store.clone(), retry_queue.clone(), mailbox_key);
     let router = Router::builder(endpoint.clone())
         .accept(NODE_ALPN, handler)

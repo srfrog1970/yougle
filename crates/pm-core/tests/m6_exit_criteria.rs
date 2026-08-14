@@ -88,12 +88,17 @@ async fn server_mailbox_status_transitions_from_sent_to_delivered_via_receipt() 
     let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
+        None,
     )
     .await
     .unwrap();
-    let bob_node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-        .await
-        .unwrap();
+    let bob_node = pm_node::spawn(
+        bob_identity.mailbox_key,
+        bob_identity.server_transport_key,
+        None,
+    )
+    .await
+    .unwrap();
     alice_node.endpoint().online().await;
     bob_node.endpoint().online().await;
     let alice_server_addr = alice_node.endpoint().addr();
@@ -219,14 +224,14 @@ async fn pm_node_address_is_stable_across_restarts() {
     let (seed, _) = Seed::generate();
     let identity = pm_crypto::Identity::derive(&seed);
 
-    let node1 = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+    let node1 = pm_node::spawn(identity.mailbox_key, identity.server_transport_key, None)
         .await
         .unwrap();
     node1.endpoint().online().await;
     let id1 = node1.endpoint().addr().id;
     node1.shutdown().await.unwrap();
 
-    let node2 = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+    let node2 = pm_node::spawn(identity.mailbox_key, identity.server_transport_key, None)
         .await
         .unwrap();
     node2.endpoint().online().await;

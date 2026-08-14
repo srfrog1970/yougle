@@ -1,13 +1,15 @@
-//! In-memory retry-delivery queue for M7 (`docs/PRD.md` Flow 3's third
-//! case): when a sender's own direct attempt to a Local-only recipient
-//! fails, their own node takes over retrying delivery on a schedule. Same
-//! "does not persist across restarts" limitation as [`crate::MailboxStore`]
-//! (see its own doc comment) — not a new regression, matching that
-//! existing, already-accepted scope boundary.
+//! Retry-delivery queue for M7 (`docs/PRD.md` Flow 3's third case): when a
+//! sender's own direct attempt to a Local-only recipient fails, their own
+//! node takes over retrying delivery on a schedule. SQLCipher-encrypted at
+//! rest (see `db.rs`) — persists across restarts when `spawn` is given a
+//! `data_dir`, in-memory otherwise. `next_attempt_at_ms` is wall-clock (ms
+//! since `UNIX_EPOCH`), not a monotonic clock reading, specifically so a
+//! scheduled entry's due time survives a restart meaningfully.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// How many attempts total (the first happens as soon as a sweep picks the
 /// entry up, not after an initial delay) before giving up and reporting
@@ -37,20 +39,11 @@ const RETRY_BACKOFF: [Duration; (MAX_RETRY_ATTEMPTS - 1) as usize] =
 /// double-send matters for correctness, not just efficiency.
 const IN_FLIGHT_GRACE: Duration = Duration::from_secs(12);
 
-#[derive(Debug)]
-struct PendingEntry {
-    recipient_transport_key: [u8; 32],
-    envelope: Vec<u8>,
-    attempts: u32,
-    next_attempt_at: Instant,
-}
-
-#[derive(Debug)]
-struct Inner {
-    pending: HashMap<[u8; 16], PendingEntry>,
-    /// msg_ids whose schedule exhausted, waiting to be drained by
-    /// `PollFailedDeliveries` (see [`RetryQueue::take_failed`]).
-    failed: Vec<[u8; 16]>,
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after 1970")
+        .as_millis() as i64
 }
 
 /// One item a sweep picked up and should now attempt to deliver.
@@ -64,90 +57,148 @@ pub struct DueDelivery {
 /// A single owner's outstanding retry-delivery jobs — keyed by `msg_id`
 /// (already unique per `pm-core`'s own generation, see
 /// `Store::set_message_status`'s doc comment), not a separate id scheme.
+/// Shares its connection with [`crate::MailboxStore`] (both are handed the
+/// same `Arc<Mutex<Connection>>` by `spawn`).
 #[derive(Debug)]
 pub struct RetryQueue {
-    inner: Mutex<Inner>,
-}
-
-impl Default for RetryQueue {
-    fn default() -> Self {
-        Self::new()
-    }
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl RetryQueue {
-    pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(Inner {
-                pending: HashMap::new(),
-                failed: Vec::new(),
-            }),
-        }
+    pub(crate) fn new(conn: Arc<Mutex<Connection>>) -> Self {
+        Self { conn }
     }
 
     /// Queues `envelope` for delivery to `recipient_transport_key`, ready
     /// to be picked up on the very next sweep (a fresh entry is due
     /// immediately — no reason to wait out a backoff before the first
     /// attempt, since the recipient could already be reachable again by
-    /// then).
+    /// then). Re-scheduling an already-pending `msg_id` resets its
+    /// attempt count, matching a fresh `HashMap::insert`'s overwrite
+    /// semantics.
     pub fn schedule(&self, msg_id: [u8; 16], recipient_transport_key: [u8; 32], envelope: Vec<u8>) {
-        self.inner.lock().unwrap().pending.insert(
-            msg_id,
-            PendingEntry {
-                recipient_transport_key,
-                envelope,
-                attempts: 0,
-                next_attempt_at: Instant::now(),
-            },
-        );
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO retry_entries \
+                    (msg_id, recipient_transport_key, envelope, attempts, next_attempt_at_ms) \
+                 VALUES (?1, ?2, ?3, 0, ?4) \
+                 ON CONFLICT(msg_id) DO UPDATE SET \
+                    recipient_transport_key = excluded.recipient_transport_key, \
+                    envelope = excluded.envelope, \
+                    attempts = 0, \
+                    next_attempt_at_ms = excluded.next_attempt_at_ms",
+                params![
+                    msg_id.as_slice(),
+                    recipient_transport_key.as_slice(),
+                    envelope,
+                    now_ms()
+                ],
+            )
+            .expect("schedule: storage I/O failure after a successful open+migration");
     }
 
     /// Entries due for an attempt right now. Does not remove them — the
     /// caller reports the outcome back via [`Self::mark_delivered`] or
     /// [`Self::mark_failed`] once its own dial attempt resolves — but does
-    /// push `next_attempt_at` out by [`IN_FLIGHT_GRACE`] immediately, so an
-    /// in-flight attempt isn't handed out again by the next tick.
+    /// push `next_attempt_at_ms` out by [`IN_FLIGHT_GRACE`] immediately, so
+    /// an in-flight attempt isn't handed out again by the next tick.
     pub fn take_due(&self) -> Vec<DueDelivery> {
-        let mut inner = self.inner.lock().unwrap();
-        let now = Instant::now();
-        let mut due = Vec::new();
-        for (msg_id, entry) in inner.pending.iter_mut() {
-            if entry.next_attempt_at <= now {
-                due.push(DueDelivery {
-                    msg_id: *msg_id,
-                    recipient_transport_key: entry.recipient_transport_key,
-                    envelope: entry.envelope.clone(),
-                });
-                entry.next_attempt_at = now + IN_FLIGHT_GRACE;
-            }
+        let conn = self.conn.lock().unwrap();
+        let now = now_ms();
+
+        let due: Vec<DueDelivery> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT msg_id, recipient_transport_key, envelope \
+                     FROM retry_entries WHERE next_attempt_at_ms <= ?1",
+                )
+                .expect("take_due: storage I/O failure after a successful open+migration");
+            stmt.query_map(params![now], |row| {
+                let msg_id: Vec<u8> = row.get(0)?;
+                let recipient_transport_key: Vec<u8> = row.get(1)?;
+                Ok(DueDelivery {
+                    msg_id: msg_id.try_into().expect("msg_id column is always 16 bytes"),
+                    recipient_transport_key: recipient_transport_key
+                        .try_into()
+                        .expect("recipient_transport_key column is always 32 bytes"),
+                    envelope: row.get(2)?,
+                })
+            })
+            .expect("take_due: storage I/O failure after a successful open+migration")
+            .collect::<rusqlite::Result<_>>()
+            .expect("take_due: storage I/O failure after a successful open+migration")
+        };
+
+        let grace_until = now + IN_FLIGHT_GRACE.as_millis() as i64;
+        for entry in &due {
+            conn.execute(
+                "UPDATE retry_entries SET next_attempt_at_ms = ?1 WHERE msg_id = ?2",
+                params![grace_until, entry.msg_id.as_slice()],
+            )
+            .expect("take_due: storage I/O failure after a successful open+migration");
         }
         due
     }
 
     /// A queued delivery succeeded — remove it.
     pub fn mark_delivered(&self, msg_id: [u8; 16]) {
-        self.inner.lock().unwrap().pending.remove(&msg_id);
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM retry_entries WHERE msg_id = ?1",
+                params![msg_id.as_slice()],
+            )
+            .expect("mark_delivered: storage I/O failure after a successful open+migration");
     }
 
     /// A queued delivery's attempt failed — reschedule per
     /// [`RETRY_BACKOFF`], or, once [`MAX_RETRY_ATTEMPTS`] is reached, move
-    /// it to the failed list `PollFailedDeliveries` drains.
+    /// it to the failed list `PollFailedDeliveries` drains. An unknown
+    /// `msg_id` (already delivered/removed elsewhere) is a harmless no-op.
     pub fn mark_failed(&self, msg_id: [u8; 16]) {
-        let mut inner = self.inner.lock().unwrap();
-        let attempts = match inner.pending.get_mut(&msg_id) {
-            Some(entry) => {
-                entry.attempts += 1;
-                entry.attempts
-            }
-            None => return,
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .expect("mark_failed: storage I/O failure after a successful open+migration");
+
+        let attempts: Option<i64> = tx
+            .query_row(
+                "SELECT attempts FROM retry_entries WHERE msg_id = ?1",
+                params![msg_id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("mark_failed: storage I/O failure after a successful open+migration");
+        let Some(attempts) = attempts else {
+            return; // unknown msg_id: nothing to update, tx rolls back on drop
         };
+        let attempts = attempts as u32 + 1;
+
         if attempts >= MAX_RETRY_ATTEMPTS {
-            inner.pending.remove(&msg_id);
-            inner.failed.push(msg_id);
+            tx.execute(
+                "DELETE FROM retry_entries WHERE msg_id = ?1",
+                params![msg_id.as_slice()],
+            )
+            .expect("mark_failed: storage I/O failure after a successful open+migration");
+            tx.execute(
+                "INSERT OR IGNORE INTO failed_deliveries (msg_id) VALUES (?1)",
+                params![msg_id.as_slice()],
+            )
+            .expect("mark_failed: storage I/O failure after a successful open+migration");
         } else {
-            let entry = inner.pending.get_mut(&msg_id).expect("just matched above");
-            entry.next_attempt_at = Instant::now() + RETRY_BACKOFF[(attempts - 1) as usize];
+            let next_attempt_at_ms =
+                now_ms() + RETRY_BACKOFF[(attempts - 1) as usize].as_millis() as i64;
+            tx.execute(
+                "UPDATE retry_entries SET attempts = ?1, next_attempt_at_ms = ?2 WHERE msg_id = ?3",
+                params![attempts as i64, next_attempt_at_ms, msg_id.as_slice()],
+            )
+            .expect("mark_failed: storage I/O failure after a successful open+migration");
         }
+        tx.commit()
+            .expect("mark_failed: storage I/O failure after a successful open+migration");
     }
 
     /// Drains (returns and clears) the msg_ids whose schedule has
@@ -155,17 +206,42 @@ impl RetryQueue {
     /// doc comment for why this is drain-on-read rather than a separate
     /// ack step.
     pub fn take_failed(&self) -> Vec<[u8; 16]> {
-        std::mem::take(&mut self.inner.lock().unwrap().failed)
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .expect("take_failed: storage I/O failure after a successful open+migration");
+        let ids: Vec<[u8; 16]> = {
+            let mut stmt = tx
+                .prepare("SELECT msg_id FROM failed_deliveries")
+                .expect("take_failed: storage I/O failure after a successful open+migration");
+            stmt.query_map([], |row| {
+                let msg_id: Vec<u8> = row.get(0)?;
+                Ok(msg_id.try_into().expect("msg_id column is always 16 bytes"))
+            })
+            .expect("take_failed: storage I/O failure after a successful open+migration")
+            .collect::<rusqlite::Result<_>>()
+            .expect("take_failed: storage I/O failure after a successful open+migration")
+        };
+        tx.execute("DELETE FROM failed_deliveries", [])
+            .expect("take_failed: storage I/O failure after a successful open+migration");
+        tx.commit()
+            .expect("take_failed: storage I/O failure after a successful open+migration");
+        ids
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
+
+    fn queue() -> RetryQueue {
+        RetryQueue::new(db::open_for_test())
+    }
 
     #[test]
     fn a_freshly_scheduled_entry_is_due_immediately() {
-        let queue = RetryQueue::new();
+        let queue = queue();
         queue.schedule([1u8; 16], [2u8; 32], b"envelope".to_vec());
 
         let due = queue.take_due();
@@ -177,7 +253,7 @@ mod tests {
 
     #[test]
     fn taking_an_entry_protects_it_from_being_taken_again_immediately() {
-        let queue = RetryQueue::new();
+        let queue = queue();
         queue.schedule([1u8; 16], [2u8; 32], b"envelope".to_vec());
 
         assert_eq!(queue.take_due().len(), 1);
@@ -190,7 +266,7 @@ mod tests {
 
     #[test]
     fn mark_delivered_removes_the_entry() {
-        let queue = RetryQueue::new();
+        let queue = queue();
         queue.schedule([1u8; 16], [2u8; 32], b"envelope".to_vec());
         queue.take_due();
 
@@ -202,13 +278,13 @@ mod tests {
 
     #[test]
     fn mark_failed_on_an_unknown_msg_id_is_a_harmless_no_op() {
-        let queue = RetryQueue::new();
+        let queue = queue();
         queue.mark_failed([9u8; 16]); // must not panic
     }
 
     #[test]
     fn exhausting_max_retry_attempts_moves_the_entry_to_the_failed_list() {
-        let queue = RetryQueue::new();
+        let queue = queue();
         queue.schedule([1u8; 16], [2u8; 32], b"envelope".to_vec());
 
         for _ in 0..MAX_RETRY_ATTEMPTS {
@@ -222,11 +298,26 @@ mod tests {
 
     #[test]
     fn a_failure_before_exhaustion_is_not_reported_as_failed() {
-        let queue = RetryQueue::new();
+        let queue = queue();
         queue.schedule([1u8; 16], [2u8; 32], b"envelope".to_vec());
 
         queue.mark_failed([1u8; 16]); // 1 of MAX_RETRY_ATTEMPTS
 
         assert_eq!(queue.take_failed(), Vec::<[u8; 16]>::new());
+    }
+
+    #[test]
+    fn a_failure_before_exhaustion_leaves_the_entry_pending_not_immediately_due() {
+        let queue = queue();
+        queue.schedule([1u8; 16], [2u8; 32], b"envelope".to_vec());
+        queue.take_due(); // first attempt, now in the in-flight grace window
+
+        queue.mark_failed([1u8; 16]); // reschedules per RETRY_BACKOFF[0] (5s out)
+
+        assert_eq!(
+            queue.take_due().len(),
+            0,
+            "a just-failed entry should be backed off, not immediately due again"
+        );
     }
 }

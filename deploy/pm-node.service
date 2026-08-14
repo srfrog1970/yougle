@@ -7,8 +7,16 @@ Wants=network-online.target
 # An unprivileged, kernel-managed dynamic user - no manual `useradd` step
 # to get right (or wrong) for a solo self-hoster.
 DynamicUser=yes
+# systemd auto-creates /var/lib/pm-node, owned by the DynamicUser-assigned
+# uid, and removes it if this unit is uninstalled — no manual directory/
+# permissions setup needed. %S expands to the state directory root
+# (/var/lib), so %S/pm-node is that same path; placed after
+# EnvironmentFile so it can't be shadowed by anything left in the env
+# file.
+StateDirectory=pm-node
 ExecStart=/usr/local/bin/pm-node
 EnvironmentFile=/etc/pm-node/pm-node.env
+Environment=PM_NODE_DATA_DIR=%S/pm-node
 Restart=always
 RestartSec=5
 

@@ -27,6 +27,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /build/target/release/pm-node /usr/local/bin/pm-node
 
-# Configuration (PM_NODE_MAILBOX_KEY, PM_NODE_TRANSPORT_KEY) comes entirely
-# from the environment — see .env.example and ../README.md.
+# Configuration (PM_NODE_MAILBOX_KEY, PM_NODE_TRANSPORT_KEY,
+# PM_NODE_DATA_DIR) comes entirely from the environment — see
+# .env.example and ../README.md. /data is the documented default mount
+# point for PM_NODE_DATA_DIR in docker-compose.yml; declaring it here is
+# just a hint for `docker volume`/`docker inspect`, not itself required
+# for persistence to work.
+VOLUME ["/data"]
+
 ENTRYPOINT ["/usr/local/bin/pm-node"]

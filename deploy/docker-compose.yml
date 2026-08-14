@@ -16,3 +16,13 @@ services:
     # container's traffic behaves exactly like running the binary directly
     # on this machine, which is also what's actually been tested.
     network_mode: host
+    # Named volume so mailbox storage survives `docker compose restart`/
+    # `down` (but not `down -v`, which is the explicit "actually delete
+    # everything" case). PM_NODE_DATA_DIR=/data in .env is what actually
+    # tells pm-node to use it — this mount alone is a no-op if that's
+    # unset (pm-node would just run in-memory inside an unused volume).
+    volumes:
+      - pm-node-data:/data
+
+volumes:
+  pm-node-data:

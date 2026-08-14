@@ -144,10 +144,11 @@ mod tests {
 
     fn handler() -> (MailboxHandler, [u8; 32]) {
         let mailbox_key = [1u8; 32];
+        let conn = crate::db::open_for_test();
         (
             MailboxHandler::new(
-                Arc::new(MailboxStore::new()),
-                Arc::new(RetryQueue::new()),
+                Arc::new(MailboxStore::new(conn.clone())),
+                Arc::new(RetryQueue::new(conn)),
                 mailbox_key,
             ),
             mailbox_key,

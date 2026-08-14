@@ -20,12 +20,17 @@ async fn mutual_pairing_lands_on_the_same_secret_and_a_working_conversation() {
     let alice_node = pm_node::spawn(
         alice_identity.mailbox_key,
         alice_identity.server_transport_key,
+        None,
     )
     .await
     .unwrap();
-    let bob_node = pm_node::spawn(bob_identity.mailbox_key, bob_identity.server_transport_key)
-        .await
-        .unwrap();
+    let bob_node = pm_node::spawn(
+        bob_identity.mailbox_key,
+        bob_identity.server_transport_key,
+        None,
+    )
+    .await
+    .unwrap();
     alice_node.endpoint().online().await;
     bob_node.endpoint().online().await;
     let alice_server_addr = alice_node.endpoint().addr();
@@ -132,7 +137,7 @@ async fn own_server_addr_persists_across_close_and_reopen() {
     let dir = tempdir().unwrap();
     let (seed, _) = Seed::generate();
     let identity = pm_crypto::Identity::derive(&seed);
-    let node = pm_node::spawn(identity.mailbox_key, identity.server_transport_key)
+    let node = pm_node::spawn(identity.mailbox_key, identity.server_transport_key, None)
         .await
         .unwrap();
     node.endpoint().online().await;

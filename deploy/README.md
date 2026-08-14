@@ -12,12 +12,16 @@ printed pasteable address, `restart: unless-stopped` correctly leaving an
 explicitly-stopped container stopped) and installed and ran as an actual
 systemd unit (`enabled`+`active`, `DynamicUser=yes` confirmed running as
 an unprivileged `pm-node` user rather than root, `Restart=always`
-confirmed set). Not yet verified: an actual in-process crash triggering
-systemd's/Docker's auto-restart (the minimal runtime image has no
-`kill`/`pkill` to trigger one from inside; the policies themselves are
-confirmed correctly configured), and real connectivity between two
-genuinely separate home networks/NATs rather than one host reaching the
-public relay.
+confirmed set). Persistent storage (`PM_NODE_DATA_DIR`) has also been
+verified for real on both paths: with it set, a message written to a
+running node survives `docker compose restart` and, separately, a real
+`systemctl restart pm-node` (with `/var/lib/pm-node` confirmed owned by
+the `DynamicUser`-assigned uid, not root) — not just a passing unit test.
+Not yet verified: an actual in-process crash triggering systemd's/Docker's
+auto-restart (the minimal runtime image has no `kill`/`pkill` to trigger
+one from inside; the policies themselves are confirmed correctly
+configured), and real connectivity between two genuinely separate home
+networks/NATs rather than one host reaching the public relay.
 
 ## 1. Get your keys from the app
 
@@ -91,8 +95,22 @@ host networking rather than a published port mapping.
 
 ## Data
 
-`pm-node`'s mailbox storage is in-memory only in this build — restarting
-it (a reboot, a crash, `docker compose restart`) clears anything not yet
-fetched by its owner or delivered by a pending retry. Persistent storage
-is a known, not-yet-addressed limitation (see the repo root `README.md`'s
-project status), not something specific to this deployment method.
+`pm-node`'s mailbox storage (stored messages, the backup blob, and the M7
+retry-delivery queue) is SQLCipher-encrypted at rest, keyed by a value
+derived from your `PM_NODE_MAILBOX_KEY` — never a copy of that value
+itself. Whether it persists across a restart depends on `PM_NODE_DATA_DIR`,
+which both deployment paths here already set up for you:
+
+- **Docker**: `docker-compose.yml` mounts a named volume at `/data`, and
+  `.env.example` has `PM_NODE_DATA_DIR=/data` ready to uncomment — do that
+  before your first `docker compose up -d` if you want durability from the
+  start (changing it later just means today's already-running in-memory
+  data doesn't carry over, not that anything breaks).
+- **systemd**: `pm-node.service` sets `PM_NODE_DATA_DIR` for you via
+  `StateDirectory=pm-node`, which systemd resolves to `/var/lib/pm-node` —
+  nothing to configure.
+
+Leaving `PM_NODE_DATA_DIR` unset (or commenting it back out for Docker)
+runs fully in-memory, matching this project's original default: a
+restart clears anything not yet fetched by its owner or delivered by a
+pending retry.
