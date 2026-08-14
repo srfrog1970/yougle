@@ -17,11 +17,24 @@ verified for real on both paths: with it set, a message written to a
 running node survives `docker compose restart` and, separately, a real
 `systemctl restart pm-node` (with `/var/lib/pm-node` confirmed owned by
 the `DynamicUser`-assigned uid, not root) — not just a passing unit test.
+`pm-core`'s real Local-to-local direct P2P delivery has also been
+verified across two simulated, genuinely isolated NATed networks (Linux
+network namespaces, no shared route between them, real NAT/DNS/discovery
+against n0's production relay infrastructure — see
+[`nat-sim/README.md`](nat-sim/README.md)): a message delivered
+successfully both directions, over the real relay (this single machine's
+own nested NAT chain doesn't support hairpin loopback, so a direct
+hole-punched path wasn't available to test here — an inconclusive result
+for hole-punching specifically, not a failure of the delivery path
+itself, which is what this test actually establishes). A true second
+physical device on a genuinely separate network remains the strongest
+final confirmation and hasn't been done yet.
+
 Not yet verified: an actual in-process crash triggering systemd's/Docker's
 auto-restart (the minimal runtime image has no `kill`/`pkill` to trigger
 one from inside; the policies themselves are confirmed correctly
-configured), and real connectivity between two genuinely separate home
-networks/NATs rather than one host reaching the public relay.
+configured), and a real hole-punched (not relay-fallback) direct
+connection between two genuinely separate physical networks.
 
 ## 1. Get your keys from the app
 
