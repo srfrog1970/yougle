@@ -1,8 +1,10 @@
 # Yougle
 
-A privacy-focused, decentralized text messenger. No accounts, no phone numbers, no push notifications, no shared third-party infrastructure.
+A privacy-focused, decentralized text messenger. No accounts, no phone numbers, no push notifications, no shared third-party messaging infrastructure.
 
 Every user gets an automatic, client-side **Local** mailbox for direct, live delivery. Anyone can optionally run their own self-hosted **Server** mailbox for durable, asynchronous delivery — always owned by the person running it, never a shared community operator.
+
+**One honest caveat to "no shared infrastructure":** *connectivity* — not messaging — currently depends on n0's public relay and discovery servers (`*.relay.n0.iroh.link`, `dns.iroh.link`, via the [iroh](https://iroh.computer) transport). Every device publishes its address there and may route ciphertext through an n0-operated relay when a direct connection can't be established. Message content is never visible to n0 — but endpoint identities and connection timing are, for effectively every conversation in this system today. This is a real, structurally necessary third party, distinct from (and not resolved by) removing the shared community mailbox. See [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) for the full picture.
 
 **Just want to install the app and use it?** See [`QUICKSTART.md`](QUICKSTART.md) — download, sideload, pair, send, and optionally connect your own node, no development environment needed.
 
