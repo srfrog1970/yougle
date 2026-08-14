@@ -28,8 +28,8 @@ crates/
 app/               React Native UI (TypeScript)
 docs/
   PRD.md          product requirements
-  PROTOCOL.md     wire spec (TBD)
-  THREAT-MODEL.md what is and is not claimed (TBD)
+  PROTOCOL.md     wire format spec
+  THREAT-MODEL.md what is and is not claimed
   adr/            architectural decision records
 deploy/            Dockerfile, compose, systemd unit for pm-node
 ```
