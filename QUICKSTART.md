@@ -13,8 +13,8 @@ means no app-store account either. Instead, download the signed APK
 directly from this repo's [Releases page](../../releases) and sideload
 it:
 
-1. On your Android phone, open the latest release and download
-   `app-release.apk`.
+1. On your Android phone, open the latest release and download the
+   attached `.apk` file.
 2. Tap the downloaded file. Android will block the install the first
    time and prompt you to allow installs from that source (browser or
    file manager) — this is expected for any app installed outside the
