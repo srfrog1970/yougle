@@ -86,3 +86,18 @@ For iOS (macOS only): `npx ubrn build ios --and-generate`.
 ```
 npm run ubrn:clean
 ```
+
+## Release signing
+
+`example/android/app/build.gradle`'s `release` build type signs with
+whatever `example/android/keystore.properties` (gitignored, not
+committed) points at, falling back to the debug keystore only when that
+file is absent. The actual release keystore used to sign published APKs
+lives outside the repo entirely, at `~/.yougle-release/` on the
+machine that built the current release — regenerate a new one anytime
+with `keytool -genkeypair`, matching the shape in
+`example/android/keystore.properties.example`. Note that a new keystore
+produces a different signing key, so devices with an existing install
+signed by the old key will need to uninstall before installing a build
+signed by the new one (Android refuses same-package updates across a
+signature change).
