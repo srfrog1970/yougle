@@ -20,15 +20,24 @@ pub(crate) enum PlaintextPayload {
     /// A signed announcement that the sender's own mailbox situation
     /// changed — `server_addr: None` means "I'm Local-only now".
     /// `signature` is a 64-byte Ed25519 signature over `(server_addr,
-    /// updated_at)` (`Vec<u8>`, not `[u8; 64]` — serde's built-in array
-    /// support tops out well below 64), verified independently of
+    /// updated_at, seq)` (`Vec<u8>`, not `[u8; 64]` — serde's built-in
+    /// array support tops out well below 64), verified independently of
     /// whatever Olm session carries this (see
-    /// `client::verify_pointer_update`), and `updated_at` doubles as
-    /// replay/rollback protection — a receiver only accepts one strictly
-    /// newer than the last it applied from this sender.
+    /// `client::verify_pointer_update`). `seq` — this sender's own
+    /// locally-persisted, monotonically-incrementing broadcast counter —
+    /// is the actual replay/rollback protection: a receiver only accepts
+    /// one strictly greater than the last it applied from this sender.
+    /// `updated_at` is a wall-clock timestamp kept for informational
+    /// purposes only (audit/debugging) — deliberately *not* used to gate
+    /// acceptance, since wall-clock time isn't guaranteed to move forward
+    /// consistently across independent devices (a genuinely later update
+    /// can carry an earlier timestamp than one already accepted, e.g.
+    /// clock drift), which a monotonic counter is immune to by
+    /// construction.
     MailboxPointerUpdate {
         server_addr: Option<Vec<u8>>,
         updated_at: u64,
+        seq: u64,
         signature: Vec<u8>,
     },
 }
@@ -77,6 +86,7 @@ mod tests {
         let payload = PlaintextPayload::MailboxPointerUpdate {
             server_addr: Some(b"fake-endpoint-addr".to_vec()),
             updated_at: 1_754_000_000_000,
+            seq: 1,
             signature: vec![9u8; 64],
         };
         let bytes = payload.serialize();
@@ -84,10 +94,12 @@ mod tests {
             Some(PlaintextPayload::MailboxPointerUpdate {
                 server_addr,
                 updated_at,
+                seq,
                 signature,
             }) => {
                 assert_eq!(server_addr, Some(b"fake-endpoint-addr".to_vec()));
                 assert_eq!(updated_at, 1_754_000_000_000);
+                assert_eq!(seq, 1);
                 assert_eq!(signature, vec![9u8; 64]);
             }
             other => panic!("expected MailboxPointerUpdate, got {other:?}"),
@@ -99,6 +111,7 @@ mod tests {
         let payload = PlaintextPayload::MailboxPointerUpdate {
             server_addr: None,
             updated_at: 1,
+            seq: 1,
             signature: vec![0u8; 64],
         };
         let bytes = payload.serialize();

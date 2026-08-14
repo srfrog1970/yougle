@@ -704,11 +704,26 @@ impl ClientShared {
                 bincode::serialize(&addr).expect("EndpointAddr serialization cannot fail")
             });
         let updated_at = now_millis();
-        let signature =
-            sign_pointer_update(&shared.identity.signing_key, &server_addr_bytes, updated_at);
+        // The actual replay/rollback guard — see `PlaintextPayload::
+        // MailboxPointerUpdate`'s doc comment for why a locally-persisted
+        // counter, not `updated_at`, gates acceptance on the receiving
+        // side. One atomic tick per broadcast call, reused for every
+        // contact below (they all need to see a strictly-increasing value
+        // relative to whatever they last saw from this device, not a
+        // fresh one each).
+        let Ok(seq) = shared.store.increment_and_get_pointer_broadcast_seq() else {
+            return;
+        };
+        let signature = sign_pointer_update(
+            &shared.identity.signing_key,
+            &server_addr_bytes,
+            updated_at,
+            seq,
+        );
         let payload = PlaintextPayload::MailboxPointerUpdate {
             server_addr: server_addr_bytes,
             updated_at,
+            seq,
             signature,
         };
 
@@ -896,14 +911,16 @@ impl ClientShared {
             Some(PlaintextPayload::MailboxPointerUpdate {
                 server_addr,
                 updated_at,
+                seq,
                 signature,
             }) => {
                 let contact = shared.get_contact(contact_id)?;
                 let valid = pointer_update_is_valid(
                     &contact.identity_key,
-                    contact.pointer_updated_at,
+                    contact.pointer_seq,
                     &server_addr,
                     updated_at,
+                    seq,
                     &signature,
                 );
                 if valid {
@@ -911,6 +928,7 @@ impl ClientShared {
                         contact_id,
                         server_addr.as_deref(),
                         updated_at,
+                        seq,
                     )?;
                 }
                 // A bad signature or a stale/replayed update is silently
@@ -1037,10 +1055,17 @@ fn now_millis() -> u64 {
 }
 
 /// Canonical bytes a mailbox-pointer update's signature covers — shared by
-/// both signing and verification so they can never drift apart.
-fn pointer_update_signed_bytes(server_addr: &Option<Vec<u8>>, updated_at: u64) -> Vec<u8> {
-    bincode::serialize(&(server_addr, updated_at))
-        .expect("(Option<Vec<u8>>, u64) serialization cannot fail")
+/// both signing and verification so they can never drift apart. `seq` is
+/// included (not just `updated_at`) so the actual replay/rollback-guarding
+/// value is itself authenticated, not just the human-readable timestamp
+/// alongside it.
+fn pointer_update_signed_bytes(
+    server_addr: &Option<Vec<u8>>,
+    updated_at: u64,
+    seq: u64,
+) -> Vec<u8> {
+    bincode::serialize(&(server_addr, updated_at, seq))
+        .expect("(Option<Vec<u8>>, u64, u64) serialization cannot fail")
 }
 
 /// Signs a mailbox-pointer update with this device's own long-term
@@ -1052,10 +1077,11 @@ fn sign_pointer_update(
     signing_key: &ed25519_dalek::SigningKey,
     server_addr: &Option<Vec<u8>>,
     updated_at: u64,
+    seq: u64,
 ) -> Vec<u8> {
     use ed25519_dalek::Signer;
     signing_key
-        .sign(&pointer_update_signed_bytes(server_addr, updated_at))
+        .sign(&pointer_update_signed_bytes(server_addr, updated_at, seq))
         .to_bytes()
         .to_vec()
 }
@@ -1071,6 +1097,7 @@ fn verify_pointer_update(
     identity_key: &[u8; 32],
     server_addr: &Option<Vec<u8>>,
     updated_at: u64,
+    seq: u64,
     signature: &[u8],
 ) -> bool {
     let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(identity_key) else {
@@ -1082,7 +1109,7 @@ fn verify_pointer_update(
     let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
     verifying_key
         .verify_strict(
-            &pointer_update_signed_bytes(server_addr, updated_at),
+            &pointer_update_signed_bytes(server_addr, updated_at, seq),
             &signature,
         )
         .is_ok()
@@ -1090,19 +1117,23 @@ fn verify_pointer_update(
 
 /// Whether a received mailbox-pointer update should actually be applied:
 /// a genuine signature from this contact's known identity key, *and*
-/// strictly newer than the last update accepted from them — rejecting a
-/// stale or replayed one (e.g. from re-syncing a Server mailbox's
-/// retained history after a restore) without needing to special-case it
-/// anywhere else.
+/// strictly greater `seq` than the last update accepted from them —
+/// rejecting a stale or replayed one (e.g. from re-syncing a Server
+/// mailbox's retained history after a restore) without needing to
+/// special-case it anywhere else. `seq` gates this, not `updated_at` —
+/// see `PlaintextPayload::MailboxPointerUpdate`'s doc comment for why a
+/// monotonic counter is used instead of comparing wall-clock timestamps
+/// across independent devices.
 fn pointer_update_is_valid(
     identity_key: &[u8; 32],
-    current_pointer_updated_at: u64,
+    current_pointer_seq: u64,
     server_addr: &Option<Vec<u8>>,
     updated_at: u64,
+    seq: u64,
     signature: &[u8],
 ) -> bool {
-    verify_pointer_update(identity_key, server_addr, updated_at, signature)
-        && updated_at > current_pointer_updated_at
+    verify_pointer_update(identity_key, server_addr, updated_at, seq, signature)
+        && seq > current_pointer_seq
 }
 
 fn expect_ok(response: NodeResponse) -> Result<()> {
@@ -1128,12 +1159,13 @@ mod tests {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
         let identity_key = signing_key.verifying_key().to_bytes();
         let server_addr = Some(b"fake-endpoint-addr".to_vec());
-        let signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000);
+        let signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000, 1);
 
         assert!(verify_pointer_update(
             &identity_key,
             &server_addr,
             1_754_000_000_000,
+            1,
             &signature
         ));
     }
@@ -1145,12 +1177,13 @@ mod tests {
             .verifying_key()
             .to_bytes();
         let server_addr = Some(b"fake-endpoint-addr".to_vec());
-        let signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000);
+        let signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000, 1);
 
         assert!(!verify_pointer_update(
             &wrong_identity_key,
             &server_addr,
             1_754_000_000_000,
+            1,
             &signature
         ));
     }
@@ -1163,6 +1196,7 @@ mod tests {
             &signing_key,
             &Some(b"original-addr".to_vec()),
             1_754_000_000_000,
+            1,
         );
 
         // Same signature, but claiming a different server_addr than what
@@ -1171,6 +1205,7 @@ mod tests {
             &identity_key,
             &Some(b"tampered-addr".to_vec()),
             1_754_000_000_000,
+            1,
             &signature
         ));
         // Same signature, but claiming a different updated_at.
@@ -1178,6 +1213,15 @@ mod tests {
             &identity_key,
             &Some(b"original-addr".to_vec()),
             1_754_000_000_001,
+            1,
+            &signature
+        ));
+        // Same signature, but claiming a different seq.
+        assert!(!verify_pointer_update(
+            &identity_key,
+            &Some(b"original-addr".to_vec()),
+            1_754_000_000_000,
+            2,
             &signature
         ));
     }
@@ -1191,11 +1235,13 @@ mod tests {
             &identity_key,
             &Some(b"addr".to_vec()),
             1,
+            1,
             &[0u8; 3], // wrong length
         ));
         assert!(!verify_pointer_update(
             &identity_key,
             &Some(b"addr".to_vec()),
+            1,
             1,
             &[],
         ));
@@ -1206,34 +1252,78 @@ mod tests {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
         let identity_key = signing_key.verifying_key().to_bytes();
         let server_addr = Some(b"fake-endpoint-addr".to_vec());
-        let signature = sign_pointer_update(&signing_key, &server_addr, 1_000);
+        let signature = sign_pointer_update(&signing_key, &server_addr, 1_000, 5);
 
-        // Older than (or equal to) what's already been accepted from this
+        // seq no greater than what's already been accepted from this
         // contact — rejected regardless of the signature being genuine,
         // e.g. a re-synced Server mailbox replaying its retained history
         // after a restore.
         assert!(!pointer_update_is_valid(
             &identity_key,
-            1_000,
+            5,
             &server_addr,
             1_000,
+            5,
             &signature,
         ));
         assert!(!pointer_update_is_valid(
             &identity_key,
-            2_000,
+            6,
             &server_addr,
             1_000,
+            5,
             &signature,
         ));
 
-        // Genuinely newer — accepted.
+        // Genuinely newer seq — accepted.
         assert!(pointer_update_is_valid(
             &identity_key,
-            999,
+            4,
             &server_addr,
             1_000,
+            5,
             &signature,
+        ));
+    }
+
+    /// The actual bug this design closes: a legitimate update whose
+    /// `updated_at` is *earlier* than the last accepted one (simulating
+    /// device clock drift) must still be accepted, because acceptance is
+    /// gated on `seq`, which never involves comparing two different
+    /// devices' clocks. Before this change, this exact scenario was
+    /// silently and indistinguishably dropped, identically to an actual
+    /// forgery — see `docs/THREAT-MODEL.md`.
+    #[test]
+    fn a_genuinely_newer_update_is_accepted_even_with_an_earlier_timestamp() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let identity_key = signing_key.verifying_key().to_bytes();
+        let server_addr = Some(b"fake-endpoint-addr".to_vec());
+
+        // First update: recent-looking timestamp, seq 1.
+        let first_signature = sign_pointer_update(&signing_key, &server_addr, 1_754_000_000_000, 1);
+        assert!(pointer_update_is_valid(
+            &identity_key,
+            0,
+            &server_addr,
+            1_754_000_000_000,
+            1,
+            &first_signature,
+        ));
+
+        // Second update: seq 2 (genuinely later), but updated_at is
+        // *earlier* than the first — e.g. the sending device's clock got
+        // corrected backward between the two broadcasts. Still accepted,
+        // because seq (2) exceeds the receiver's current_pointer_seq (1)
+        // from the first update — updated_at plays no role in the
+        // decision at all.
+        let second_signature = sign_pointer_update(&signing_key, &server_addr, 1_000_000_000, 2);
+        assert!(pointer_update_is_valid(
+            &identity_key,
+            1, // current_pointer_seq, from the first update
+            &server_addr,
+            1_000_000_000, // earlier than the first update's updated_at
+            2,
+            &second_signature,
         ));
     }
 }

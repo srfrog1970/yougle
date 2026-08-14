@@ -85,8 +85,15 @@ pub struct ContactRecord {
     /// this device dial them directly for Local delivery (see M6).
     pub transport_key: Option<[u8; 32]>,
     /// `updated_at` of the last signed mailbox-pointer update accepted
-    /// from this contact — see `set_contact_pointer_update`.
+    /// from this contact — informational only (audit/debugging), not used
+    /// to gate acceptance; see `pointer_seq` and `set_contact_pointer_update`.
     pub pointer_updated_at: u64,
+    /// This contact's `pointer_broadcast_seq` as of the last signed
+    /// mailbox-pointer update accepted from them — the actual
+    /// replay/rollback guard (see `set_contact_pointer_update`'s doc
+    /// comment for why a monotonic counter is used instead of comparing
+    /// wall-clock timestamps across independent devices).
+    pub pointer_seq: u64,
 }
 
 pub struct NewMessage<'a> {
@@ -350,22 +357,29 @@ impl Store {
     }
 
     /// Applies a signed mailbox-pointer update (`docs/PRD.md` §8) already
-    /// verified by the caller: updates `server_addr` and stamps
-    /// `pointer_updated_at` together, so a later update can be compared
-    /// against exactly the value that was actually applied. Callers are
-    /// expected to have already checked `updated_at` against the
-    /// contact's current `pointer_updated_at` themselves (this method
-    /// doesn't re-check — it's the mechanical "apply" step, not the
-    /// policy).
+    /// verified by the caller: updates `server_addr` and stamps both
+    /// `pointer_updated_at` (informational — see `ContactRecord`'s doc
+    /// comment) and `pointer_seq` (the actual replay/rollback guard) so a
+    /// later update can be compared against exactly the values that were
+    /// actually applied. A monotonic counter, not `updated_at`, gates
+    /// acceptance specifically because wall-clock time isn't guaranteed to
+    /// move forward consistently across independent devices — a sender's
+    /// genuinely later update can carry an earlier timestamp than one
+    /// already accepted (clock drift), which a wall-clock-only check can't
+    /// tell apart from a replay of a stale one. Callers are expected to
+    /// have already checked `seq` against the contact's current
+    /// `pointer_seq` themselves (this method doesn't re-check — it's the
+    /// mechanical "apply" step, not the policy).
     pub fn set_contact_pointer_update(
         &self,
         contact_id: i64,
         server_addr: Option<&[u8]>,
         updated_at: u64,
+        seq: u64,
     ) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "UPDATE contacts SET server_addr = ?1, pointer_updated_at = ?2 WHERE id = ?3",
-            params![server_addr, updated_at as i64, contact_id],
+            "UPDATE contacts SET server_addr = ?1, pointer_updated_at = ?2, pointer_seq = ?3 WHERE id = ?4",
+            params![server_addr, updated_at as i64, seq as i64, contact_id],
         )?;
         Ok(())
     }
@@ -439,7 +453,7 @@ impl Store {
     pub fn list_contacts(&self) -> Result<Vec<ContactRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk, transport_key, pointer_updated_at
+            "SELECT id, identity_key, curve25519_key, display_name, server_addr, pair_secret, next_write_n, pending_otk, transport_key, pointer_updated_at, pointer_seq
              FROM contacts ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -453,6 +467,7 @@ impl Store {
             let pending_otk: Option<Vec<u8>> = row.get(7)?;
             let transport_key: Option<Vec<u8>> = row.get(8)?;
             let pointer_updated_at: i64 = row.get(9)?;
+            let pointer_seq: i64 = row.get(10)?;
             Ok((
                 id,
                 identity_key,
@@ -464,6 +479,7 @@ impl Store {
                 pending_otk,
                 transport_key,
                 pointer_updated_at,
+                pointer_seq,
             ))
         })?;
 
@@ -480,6 +496,7 @@ impl Store {
                 pending_otk,
                 transport_key,
                 pointer_updated_at,
+                pointer_seq,
             ) = row?;
             out.push(ContactRecord {
                 id,
@@ -496,6 +513,7 @@ impl Store {
                 pending_otk: pending_otk.and_then(|v| v.try_into().ok()),
                 transport_key: transport_key.and_then(|v| v.try_into().ok()),
                 pointer_updated_at: pointer_updated_at as u64,
+                pointer_seq: pointer_seq as u64,
             });
         }
         Ok(out)
@@ -534,6 +552,65 @@ impl Store {
             [value as i64],
         )?;
         Ok(())
+    }
+
+    /// This device's own current mailbox-pointer-update broadcast counter
+    /// (see `set_contact_pointer_update`'s doc comment for why a counter,
+    /// not wall-clock time, gates acceptance on the receiving side).
+    /// Read-only — used to include the current value in a backup bundle,
+    /// so restoring onto a new device doesn't reset it (see
+    /// `set_pointer_broadcast_seq`).
+    pub fn get_pointer_broadcast_seq(&self) -> Result<u64> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT pointer_broadcast_seq FROM account WHERE id = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|opt| opt.unwrap_or(0) as u64)
+            .map_err(Into::into)
+    }
+
+    /// Restores an exact previously-backed-up broadcast counter value onto
+    /// a freshly-opened store — distinct from
+    /// `increment_and_get_pointer_broadcast_seq`, which advances it for a
+    /// real new broadcast. Without this, a device restored from backup
+    /// would start counting from 0 again, and every contact who'd already
+    /// seen a higher value from it would permanently reject its future
+    /// updates.
+    pub fn set_pointer_broadcast_seq(&self, value: u64) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO account (id, pickle, updated_at, pointer_broadcast_seq)
+             VALUES (0, x'', unixepoch(), ?1)
+             ON CONFLICT (id) DO UPDATE SET pointer_broadcast_seq = excluded.pointer_broadcast_seq",
+            [value as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically advances and returns this device's mailbox-pointer-update
+    /// broadcast counter — the `seq` a real new broadcast should carry.
+    /// Starts at 1 for the first-ever broadcast (0 is a contact's initial
+    /// "never updated" `pointer_seq`, so any real value trivially exceeds
+    /// it).
+    pub fn increment_and_get_pointer_broadcast_seq(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO account (id, pickle, updated_at, pointer_broadcast_seq)
+             VALUES (0, x'', unixepoch(), 1)
+             ON CONFLICT (id) DO UPDATE SET pointer_broadcast_seq = pointer_broadcast_seq + 1",
+            [],
+        )?;
+        conn.query_row(
+            "SELECT pointer_broadcast_seq FROM account WHERE id = 0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|v| v as u64)
+        .map_err(Into::into)
     }
 
     /// This device's own Server mailbox address, if it has one — an opaque,
@@ -716,23 +793,47 @@ mod tests {
         let store = Store::open_in_memory(&KEY).unwrap();
         let contact_id = store.upsert_contact(&[1u8; 32], &[2u8; 32], None).unwrap();
         assert_eq!(store.list_contacts().unwrap()[0].pointer_updated_at, 0);
+        assert_eq!(store.list_contacts().unwrap()[0].pointer_seq, 0);
 
         store
-            .set_contact_pointer_update(contact_id, Some(b"new-server-addr"), 1_754_000_000_000)
+            .set_contact_pointer_update(contact_id, Some(b"new-server-addr"), 1_754_000_000_000, 1)
             .unwrap();
 
         let contact = store.get_contact(contact_id).unwrap().unwrap();
         assert_eq!(contact.server_addr, Some(b"new-server-addr".to_vec()));
         assert_eq!(contact.pointer_updated_at, 1_754_000_000_000);
+        assert_eq!(contact.pointer_seq, 1);
 
         // A later update can clear server_addr back to Local-only while
-        // still advancing pointer_updated_at.
+        // still advancing pointer_updated_at/pointer_seq.
         store
-            .set_contact_pointer_update(contact_id, None, 1_754_000_001_000)
+            .set_contact_pointer_update(contact_id, None, 1_754_000_001_000, 2)
             .unwrap();
         let contact = store.get_contact(contact_id).unwrap().unwrap();
         assert_eq!(contact.server_addr, None);
         assert_eq!(contact.pointer_updated_at, 1_754_000_001_000);
+        assert_eq!(contact.pointer_seq, 2);
+    }
+
+    #[test]
+    fn pointer_broadcast_seq_increments_and_can_be_restored_to_an_exact_value() {
+        let store = Store::open_in_memory(&KEY).unwrap();
+        assert_eq!(store.get_pointer_broadcast_seq().unwrap(), 0);
+
+        assert_eq!(store.increment_and_get_pointer_broadcast_seq().unwrap(), 1);
+        assert_eq!(store.increment_and_get_pointer_broadcast_seq().unwrap(), 2);
+        assert_eq!(store.increment_and_get_pointer_broadcast_seq().unwrap(), 3);
+        assert_eq!(store.get_pointer_broadcast_seq().unwrap(), 3);
+
+        // Restoring a backed-up value (e.g. onto a fresh device) must set
+        // it exactly, not add to it, and a subsequent real broadcast must
+        // continue counting up from there, not from 0.
+        store.set_pointer_broadcast_seq(100).unwrap();
+        assert_eq!(store.get_pointer_broadcast_seq().unwrap(), 100);
+        assert_eq!(
+            store.increment_and_get_pointer_broadcast_seq().unwrap(),
+            101
+        );
     }
 
     #[test]
