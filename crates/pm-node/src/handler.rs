@@ -8,6 +8,7 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use pm_proto::{NodeRequest, NodeResponse, MAX_MESSAGE_SIZE};
 
+use crate::rate_limit::RateLimiter;
 use crate::retry_queue::RetryQueue;
 use crate::store::{MailboxStore, WriteError};
 
@@ -15,6 +16,7 @@ use crate::store::{MailboxStore, WriteError};
 pub struct MailboxHandler {
     store: Arc<MailboxStore>,
     retry_queue: Arc<RetryQueue>,
+    rate_limiter: Arc<RateLimiter>,
     /// The single tenant this node serves. Requests that claim mailbox
     /// ownership (`Fetch`, `Ack`, `RegisterSlot`, `ScheduleRetry`,
     /// `PollFailedDeliveries`) must present this exact key; `Write` never
@@ -26,11 +28,13 @@ impl MailboxHandler {
     pub fn new(
         store: Arc<MailboxStore>,
         retry_queue: Arc<RetryQueue>,
+        rate_limiter: Arc<RateLimiter>,
         mailbox_key: [u8; 32],
     ) -> Self {
         Self {
             store,
             retry_queue,
+            rate_limiter,
             mailbox_key,
         }
     }
@@ -121,6 +125,20 @@ impl ProtocolHandler for MailboxHandler {
             .await
             .map_err(std::io::Error::other)?;
         let response = match bincode::deserialize::<NodeRequest>(&request_bytes) {
+            // RegisterSlot/Write are the two request types with no
+            // owner-auth check (Write by design, since a sender isn't the
+            // owner; RegisterSlot in case a mailbox_key ever leaks) — the
+            // only ones rate-limited. Routine owner-authenticated polling
+            // (Fetch/Ack/PollFailedDeliveries) is deliberately excluded:
+            // it's already gated by mailbox_key, and throttling it would
+            // risk breaking legitimate frequent polling rather than
+            // guarding anything an attacker couldn't already do by
+            // presenting the same key more slowly.
+            Ok(NodeRequest::RegisterSlot { .. } | NodeRequest::Write { .. })
+                if !self.rate_limiter.allow(connection.remote_id()) =>
+            {
+                NodeResponse::Error("rate limit exceeded, try again shortly".to_string())
+            }
             Ok(request) => self.handle(request),
             Err(e) => NodeResponse::Error(format!("malformed request: {e}")),
         };
@@ -149,6 +167,7 @@ mod tests {
             MailboxHandler::new(
                 Arc::new(MailboxStore::new(conn.clone())),
                 Arc::new(RetryQueue::new(conn)),
+                Arc::new(RateLimiter::new(1000, std::time::Duration::from_secs(60))),
                 mailbox_key,
             ),
             mailbox_key,
